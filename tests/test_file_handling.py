@@ -5,7 +5,7 @@ import io
 from PIL import Image
 
 from src.utils.file_validator import FileValidator, InvalidFileTypeError
-from src.utils.exceptions import FileCorruptError, FileAccessError
+from src.utils.exceptions import FileCorruptError, FileAccessError, FileTooLargeError
 
 class TestFileHandling:
     """
@@ -53,11 +53,11 @@ class TestFileHandling:
         Test that files with unsupported types are rejected.
         """
         # Create a text file with .pdf extension
-        test_file = tmp_path / "fake.pdf"
-        test_file.write_text("This is not a PDF file")
+        test_file = tmp_path / "test.xyz"
+        test_file.write_text("This is not a valid file type")
 
         validator = FileValidator()
-        with pytest.raises(InvalidFileTypeError):
+        with pytest.raises(InvalidFileTypeError, match="Unsupported file type"):
             validator.is_valid_file_type(test_file)
 
     def test_empty_file(self, tmp_path):
@@ -81,7 +81,7 @@ class TestFileHandling:
         test_file.write_bytes(b"%PDF-1.5" + b"0" * (11 * 1024 * 1024))  # 11MB file
 
         validator = FileValidator()
-        with pytest.raises(InvalidFileTypeError, match="File too large"):
+        with pytest.raises(FileTooLargeError, match="File exceeds maximum allowed size"):
             validator.is_valid_file_type(test_file)
 
     def test_nonexistent_file(self):

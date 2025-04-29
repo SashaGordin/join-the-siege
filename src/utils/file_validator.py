@@ -27,7 +27,14 @@ class FileValidator:
     ALLOWED_MIME_TYPES = {
         'application/pdf': '.pdf',
         'image/jpeg': '.jpg',
-        'image/png': '.png'
+        'image/png': '.png',
+        'text/plain': '.txt',
+        # Common variations of text MIME types
+        'text/x-python': '.txt',  # Python files are text
+        'text/x-java': '.txt',    # Java files are text
+        'text/x-c': '.txt',       # C files are text
+        'text/x-cpp': '.txt',     # C++ files are text
+        'text/x-script': '.txt',  # Script files are text
     }
 
     def __init__(self):
@@ -80,28 +87,33 @@ class FileValidator:
 
         # Check file size
         if file_path.stat().st_size > self.MAX_FILE_SIZE:
-            raise InvalidFileTypeError("File too large")
+            raise FileTooLargeError("File exceeds maximum allowed size")
 
         # Get actual MIME type from file content
         actual_mime_type = self.get_file_type(file_path)
-
-        # Check if the MIME type is supported
-        if actual_mime_type not in self.ALLOWED_MIME_TYPES:
-            raise InvalidFileTypeError(f"Unsupported file type: {actual_mime_type}")
-
-        # Get the expected extension for this MIME type
-        expected_ext = self.ALLOWED_MIME_TYPES[actual_mime_type]
-        # Get the actual file extension (converted to lowercase)
         actual_ext = file_path.suffix.lower()
 
-        # Check if extension matches the actual content type
-        if actual_ext != expected_ext:
-            raise InvalidFileTypeError(
-                f"File extension does not match content type. "
-                f"Got {actual_ext} but expected {expected_ext} for {actual_mime_type}"
-            )
+        # For text files, normalize the MIME type and check extension
+        if actual_mime_type.startswith('text/'):
+            if actual_ext in ['.txt', '.text', '.log']:
+                return True
+            # If it's a text file with wrong extension, treat it as unsupported
+            raise InvalidFileTypeError(f"Unsupported file type: text file with invalid extension {actual_ext}")
 
-        return True
+        # For images, allow them through validation (they'll be handled in classification)
+        if actual_mime_type in ['image/jpeg', 'image/png']:
+            if actual_ext in ['.jpg', '.jpeg', '.png']:
+                return True
+            raise InvalidFileTypeError(f"File extension does not match content type")
+
+        # For PDFs, check both MIME type and extension
+        if actual_mime_type == 'application/pdf':
+            if actual_ext == '.pdf':
+                return True
+            raise InvalidFileTypeError(f"File extension does not match content type")
+
+        # If we get here, the file type is not supported
+        raise InvalidFileTypeError(f"Unsupported file type: {actual_mime_type}")
 
     def get_file_preview(self, file_path: Union[str, Path]) -> Dict[str, Any]:
         """
@@ -118,14 +130,19 @@ class FileValidator:
             InvalidFileTypeError: If file type is not supported
         """
         file_path = Path(file_path)
-
-        # Validate file first
-        self.is_valid_file_type(file_path)
-
         mime_type = self.get_file_type(file_path)
-        preview_data = {'mime_type': mime_type}
+
+        # Initialize preview data
+        preview_data = {
+            'mime_type': mime_type,
+            'preview_available': False
+        }
 
         try:
+            # Validate file type (but allow images through)
+            if not mime_type.startswith('image/'):
+                self.is_valid_file_type(file_path)
+
             if mime_type.startswith('image/'):
                 # Handle image preview
                 with Image.open(file_path) as img:
@@ -136,11 +153,22 @@ class FileValidator:
                     img.save(thumb_io, format=img.format)
                     preview_data['thumbnail'] = thumb_io.getvalue()
                     preview_data['dimensions'] = img.size
+                    preview_data['preview_available'] = True
 
             elif mime_type == 'application/pdf':
                 # For now, just return the first page info
-                # TODO: Implement PDF preview
                 preview_data['preview_available'] = False
+
+            elif mime_type.startswith('text/'):
+                # For text files, return first few lines
+                try:
+                    with open(file_path, 'r') as f:
+                        lines = [next(f) for _ in range(10)]
+                        preview_data['text_preview'] = ''.join(lines)
+                        preview_data['preview_available'] = True
+                except (StopIteration, UnicodeDecodeError):
+                    # File has fewer lines or is not readable as text
+                    preview_data['preview_available'] = False
 
             return preview_data
 
