@@ -1,6 +1,8 @@
 import magic
 from pathlib import Path
-from typing import Union, Set
+from typing import Union, Dict, Any
+import io
+from PIL import Image
 
 from .exceptions import (
     InvalidFileTypeError,
@@ -12,10 +14,14 @@ from .exceptions import (
 class FileValidator:
     """
     Validates files for type, size, and content.
+    Provides preview functionality for supported file types.
     """
 
     # Maximum file size (10MB)
     MAX_FILE_SIZE = 10 * 1024 * 1024
+
+    # Maximum preview size for images
+    MAX_PREVIEW_SIZE = (300, 300)
 
     # Allowed MIME types and their corresponding extensions
     ALLOWED_MIME_TYPES = {
@@ -76,17 +82,67 @@ class FileValidator:
         if file_path.stat().st_size > self.MAX_FILE_SIZE:
             raise InvalidFileTypeError("File too large")
 
-        # Get and validate MIME type
-        mime_type = self.get_file_type(file_path)
-        if mime_type not in self.ALLOWED_MIME_TYPES:
-            raise InvalidFileTypeError(f"Unsupported file type: {mime_type}")
+        # Get actual MIME type from file content
+        actual_mime_type = self.get_file_type(file_path)
 
-        # Check if extension matches MIME type
-        expected_ext = self.ALLOWED_MIME_TYPES[mime_type]
-        if file_path.suffix.lower() != expected_ext:
+        # Check if the MIME type is supported
+        if actual_mime_type not in self.ALLOWED_MIME_TYPES:
+            raise InvalidFileTypeError(f"Unsupported file type: {actual_mime_type}")
+
+        # Get the expected extension for this MIME type
+        expected_ext = self.ALLOWED_MIME_TYPES[actual_mime_type]
+        # Get the actual file extension (converted to lowercase)
+        actual_ext = file_path.suffix.lower()
+
+        # Check if extension matches the actual content type
+        if actual_ext != expected_ext:
             raise InvalidFileTypeError(
                 f"File extension does not match content type. "
-                f"Expected {expected_ext} for {mime_type}"
+                f"Got {actual_ext} but expected {expected_ext} for {actual_mime_type}"
             )
 
         return True
+
+    def get_file_preview(self, file_path: Union[str, Path]) -> Dict[str, Any]:
+        """
+        Get a preview of the file contents.
+
+        Args:
+            file_path: Path to the file
+
+        Returns:
+            dict: Preview data including mime_type and preview-specific data
+
+        Raises:
+            FileAccessError: If file cannot be accessed
+            InvalidFileTypeError: If file type is not supported
+        """
+        file_path = Path(file_path)
+
+        # Validate file first
+        self.is_valid_file_type(file_path)
+
+        mime_type = self.get_file_type(file_path)
+        preview_data = {'mime_type': mime_type}
+
+        try:
+            if mime_type.startswith('image/'):
+                # Handle image preview
+                with Image.open(file_path) as img:
+                    # Create thumbnail
+                    img.thumbnail(self.MAX_PREVIEW_SIZE)
+                    # Save thumbnail to bytes
+                    thumb_io = io.BytesIO()
+                    img.save(thumb_io, format=img.format)
+                    preview_data['thumbnail'] = thumb_io.getvalue()
+                    preview_data['dimensions'] = img.size
+
+            elif mime_type == 'application/pdf':
+                # For now, just return the first page info
+                # TODO: Implement PDF preview
+                preview_data['preview_available'] = False
+
+            return preview_data
+
+        except Exception as e:
+            raise FileCorruptError(f"Could not generate preview: {e}")
