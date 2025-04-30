@@ -13,7 +13,6 @@ from src.classifier.pattern_learning.models import (
     PatternValidation,
     PatternMatch
 )
-from src.classifier.pattern_learning.cached_pattern_matcher import CachedPatternMatcher
 from src.classifier.pattern_learning.pattern_store import PatternStore
 import re
 import time

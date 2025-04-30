@@ -201,6 +201,105 @@ class CacheService:
             logger.error(f"Error clearing cache: {str(e)}")
             raise
 
+    def get(self, key: str) -> Optional[Any]:
+        """
+        Get value from cache.
+
+        Args:
+            key: Cache key
+
+        Returns:
+            Cached value if found, None otherwise
+        """
+        try:
+            value = self.redis_client.get(key)
+            if value:
+                return json.loads(value)
+            return None
+        except Exception as e:
+            # Log error but don't fail
+            print(f"Cache get error: {str(e)}")
+            return None
+
+    def set(self, key: str, value: Any, expire: int = 3600) -> bool:
+        """
+        Set value in cache.
+
+        Args:
+            key: Cache key
+            value: Value to cache
+            expire: Expiration time in seconds (default 1 hour)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            serialized = json.dumps(value)
+            return bool(self.redis_client.setex(key, expire, serialized))
+        except Exception as e:
+            # Log error but don't fail
+            print(f"Cache set error: {str(e)}")
+            return False
+
+    def delete(self, key: str) -> bool:
+        """
+        Delete value from cache.
+
+        Args:
+            key: Cache key
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            return bool(self.redis_client.delete(key))
+        except Exception as e:
+            print(f"Cache delete error: {str(e)}")
+            return False
+
+    def clear(self, pattern: Optional[str] = None) -> bool:
+        """
+        Clear all keys matching pattern.
+
+        Args:
+            pattern: Optional pattern to match keys (e.g. "prefix:*")
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if pattern:
+                keys = self.redis_client.keys(pattern)
+                if keys:
+                    return bool(self.redis_client.delete(*keys))
+                return True
+            return bool(self.redis_client.flushdb())
+        except Exception as e:
+            print(f"Cache clear error: {str(e)}")
+            return False
+
+    def _generate_cache_key(self, prefix: str, *args: Any, **kwargs: Any) -> str:
+        """
+        Generate a cache key from arguments.
+
+        Args:
+            prefix: Key prefix
+            *args: Positional arguments to include in key
+            **kwargs: Keyword arguments to include in key
+
+        Returns:
+            Cache key string
+        """
+        # Convert args and kwargs to strings and sort for consistency
+        key_parts = [str(arg) for arg in args]
+        key_parts.extend(f"{k}={v}" for k, v in sorted(kwargs.items()))
+
+        # Join parts and create hash
+        key_string = "|".join(key_parts)
+        key_hash = hashlib.sha256(key_string.encode('utf-8')).hexdigest()[:16]
+
+        return f"{prefix}:{key_hash}"
+
 def _serialize_arg(arg):
     """Serialize argument for cache key generation."""
     if isinstance(arg, list):

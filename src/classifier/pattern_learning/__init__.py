@@ -10,14 +10,12 @@ This module provides pattern learning, recognition, and management capabilities:
 
 from .pattern_store import PatternStore
 from .pattern_matcher import PatternMatcher
-from .cached_pattern_matcher import CachedPatternMatcher
 from .models import Pattern, PatternMatch, PatternType, MatchType, ConfidenceScore
 from .db_models import Pattern as DBPattern
 
 __all__ = [
     'PatternStore',
     'PatternMatcher',
-    'CachedPatternMatcher',
     'Pattern',
     'PatternMatch',
     'PatternType',

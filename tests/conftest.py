@@ -8,7 +8,6 @@ from src.classifier.pattern_learning.pattern_matcher import PatternMatcher
 from src.classifier.pattern_learning.pattern_store import PatternStore
 from src.classifier.pattern_learning.db_service import PatternDBService
 import os
-from src.classifier.pattern_learning.cached_pattern_matcher import CachedPatternMatcher
 from src.classifier.services.cache_service import CacheService
 
 @pytest.fixture(autouse=True)
@@ -231,10 +230,3 @@ def mock_cache_service(mock_redis):
     cache_service = CacheService()
     cache_service.redis_client = mock_redis
     return cache_service
-
-@pytest.fixture
-def cached_pattern_matcher(mock_cache_service):
-    """Get a cached pattern matcher with mocked cache service."""
-    matcher = CachedPatternMatcher()
-    matcher.cache_service = mock_cache_service
-    return matcher

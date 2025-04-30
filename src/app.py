@@ -3,6 +3,7 @@ from werkzeug.utils import secure_filename
 import os
 import tempfile
 from pathlib import Path
+import uuid
 
 from src.classifier import ContentClassifier
 from src.utils.file_validator import FileValidator
@@ -17,6 +18,8 @@ from src.classifier.exceptions import (
     ClassificationError
 )
 from src.classifier.config.config_manager import IndustryConfigManager
+from src.classifier.tasks import process_document
+from src.classifier.services.cache_service import CacheService
 
 app = Flask(__name__)
 
@@ -24,6 +27,7 @@ app = Flask(__name__)
 file_validator = FileValidator()
 content_classifier = ContentClassifier()
 config_manager = IndustryConfigManager()
+cache_service = CacheService()
 
 def save_uploaded_file(uploaded_file):
     """
@@ -226,6 +230,95 @@ def preview_file_route():
                 os.rmdir(temp_path.parent)
             except Exception:
                 pass  # Best effort cleanup
+
+@app.route('/process', methods=['POST'])
+def process():
+    """Process document asynchronously."""
+    try:
+        # Handle JSON parsing errors
+        if not request.is_json:
+            return jsonify({'error': 'Request must be JSON'}), 400
+
+        try:
+            data = request.get_json()
+        except Exception:
+            return jsonify({'error': 'Invalid JSON format'}), 400
+
+        if not data:
+            return jsonify({'error': 'Empty request body'}), 400
+
+        if 'content' not in data:
+            return jsonify({'error': 'No content provided'}), 400
+
+        if not data['content']:
+            return jsonify({'error': 'Content cannot be empty'}), 400
+
+        document_id = data.get('document_id', str(uuid.uuid4()))
+        content = data['content']
+        metadata = data.get('metadata', {})
+
+        # Check cache first
+        try:
+            cache_key = f"document_processing:{document_id}"
+            cached_result = cache_service.get(cache_key)
+            if cached_result:
+                return jsonify({
+                    'status': 'completed',
+                    'result': cached_result,
+                    'cached': True
+                })
+        except ConnectionError:
+            # Log the error but continue processing
+            app.logger.warning("Redis connection failed, continuing without cache")
+        except Exception as e:
+            # Log other cache errors but continue
+            app.logger.warning(f"Cache error: {str(e)}, continuing without cache")
+
+        # Submit async task
+        task = process_document.delay(document_id, content, metadata)
+
+        return jsonify({
+            'status': 'processing',
+            'task_id': task.id,
+            'document_id': document_id
+        })
+
+    except Exception as e:
+        app.logger.error(f"Error processing document: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/status/<task_id>', methods=['GET'])
+def get_status(task_id):
+    """Get task status."""
+    try:
+        task = process_document.AsyncResult(task_id)
+
+        if task.ready():
+            if task.successful():
+                return jsonify({
+                    'status': 'completed',
+                    'result': task.get()
+                })
+            elif task.failed():
+                return jsonify({
+                    'status': 'failed',
+                    'error': str(task.result)
+                }), 500
+            else:
+                # Task result expired
+                return jsonify({
+                    'status': 'expired',
+                    'error': 'Task result has expired'
+                }), 404
+        else:
+            return jsonify({
+                'status': 'processing',
+                'task_id': task_id
+            })
+
+    except Exception as e:
+        app.logger.error(f"Error checking task status: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
