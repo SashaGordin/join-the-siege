@@ -115,7 +115,8 @@ def classify_file_route():
                 "classification": {
                     "document_type": classification_result["class"],
                     "confidence": classification_result["confidence"],
-                    "features": classification_result["features"]
+                    "features": classification_result["features"],
+                    "pattern_features": classification_result.get("pattern_features", [])
                 },
                 "file_info": {
                     "mime_type": mime_type,

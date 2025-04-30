@@ -19,6 +19,8 @@ from .exceptions import (
 )
 from .config.config_manager import IndustryConfigManager
 import re
+from src.classifier.pattern_learning.pattern_matcher import PatternMatcher
+from src.classifier.pattern_learning.pattern_store import PatternStore
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -68,6 +70,9 @@ class ContentClassifier:
             pytesseract.get_tesseract_version()
         except pytesseract.TesseractNotFoundError:
             raise RuntimeError("Tesseract is not installed. Please install tesseract-ocr package.")
+
+        self.pattern_store = PatternStore()
+        self.pattern_matcher = PatternMatcher()
 
     def _get_industry_prompt(self, industry: str) -> str:
         """Get industry-specific prompt additions."""
@@ -456,22 +461,14 @@ Format features as "Feature Type: Value" for easy parsing."""
     def _parse_llm_response(self, response: str) -> tuple:
         """Parse LLM response into structured format."""
         try:
-            logger.debug(f"Starting to parse LLM response: {response[:200]}...")  # Log first 200 chars of response
+            logger.debug(f"Starting to parse LLM response: {response[:200]}...")
             lines = response.split('\n')
 
             doc_type = None
             confidence = None
             features = []
-            ambiguity_detected = False
-
             current_section = None
             current_features = []
-
-            # Track feature counts for ambiguity detection
-            feature_counts = {
-                "healthcare": 0,
-                "financial": 0
-            }
 
             for line in lines:
                 line = line.strip()
@@ -481,302 +478,87 @@ Format features as "Feature Type: Value" for easy parsing."""
                 line_lower = line.lower()
                 logger.debug(f"Processing line: {line}")
 
-                # Extract document type
-                if line_lower.startswith('document type:'):
+                # Extract document type - now handles numbered list format
+                if 'document type:' in line_lower:
                     doc_type = line.split(':', 1)[1].strip().lower()
-                    # Normalize document type
                     doc_type = self._normalize_doc_type(doc_type)
                     logger.debug(f"Found document type: {doc_type}")
                     continue
 
-                # Extract confidence
-                if line_lower.startswith('confidence:'):
+                # Extract confidence - now handles numbered list format
+                if 'confidence' in line_lower and ':' in line:
                     try:
                         confidence = float(line.split(':', 1)[1].strip())
                         logger.debug(f"Found confidence: {confidence}")
                     except ValueError:
-                        confidence = 0.5  # Default confidence for unparseable values
-                        logger.warning(f"Could not parse confidence value from: {line}, using default: {confidence}")
+                        confidence = 0.5  # Default confidence
                     continue
 
                 # Handle feature sections
-                if line.startswith('Features:'):
+                if 'extracted features:' in line_lower:
                     current_section = 'features'
-                    logger.debug("Entering features section")
                     continue
 
-                if current_section == 'features':
-                    # Check if this is a new feature section
-                    if line.startswith(('1.', '2.', '3.', '4.', '5.')):
-                        logger.debug(f"Found new feature section: {line}")
-                        # Add previous features if any
-                        if current_features:
-                            self._add_parsed_features(features, current_features)
-                        current_features = []
-                        continue
-
+                if current_section == 'features' and line.startswith('-'):
                     # Parse feature line
                     if ':' in line:
                         feature_type, value = line.split(':', 1)
                         feature_type = feature_type.strip('- ').lower()
                         value = value.strip()
-                        logger.debug(f"Processing feature - type: {feature_type}, value: {value}")
 
-                        # Track industry-specific features for ambiguity detection
-                        healthcare_terms = ['patient', 'cpt', 'icd', 'diagnosis', 'provider', 'medical']
-                        financial_terms = ['invoice', 'payment', 'bill', 'account', 'net 30']
-
-                        # Check healthcare terms
-                        if any(term in feature_type or term in value.lower() for term in healthcare_terms):
-                            feature_counts['healthcare'] += 1
-                            logger.debug(f"Detected healthcare feature, count now: {feature_counts['healthcare']}")
-
-                        # Check financial terms
-                        if any(term in feature_type or term in value.lower() for term in financial_terms):
-                            feature_counts['financial'] += 1
-                            logger.debug(f"Detected financial feature, count now: {feature_counts['financial']}")
-
-                        # Handle validation warnings and missing fields
-                        if any(warning in feature_type.lower() for warning in ['warning', 'missing', 'validation']):
-                            logger.debug(f"Found validation warning: {value}")
+                        # Handle different feature types
+                        if 'invoice number' in feature_type:
                             features.append({
-                                "type": "validation_warning",
+                                "type": "invoice_number",
                                 "values": [value],
                                 "present": True
                             })
-                            continue
-
-                        # Enhanced healthcare feature detection
-                        if any(id_term in feature_type for id_term in ['patient id', 'patient', 'id']):
-                            logger.debug(f"Found patient ID: {value}")
+                        elif 'date' in feature_type:
                             features.append({
-                                "type": "patient_id",
+                                "type": "date",
                                 "values": [value],
                                 "present": True
                             })
-                            continue
-
-                        # CPT code detection
-                        cpt_terms = ['cpt', 'procedure', 'service code']
-                        if any(cpt_term in feature_type or cpt_term in value.lower() for cpt_term in cpt_terms):
-                            logger.debug(f"Processing CPT code: {value}")
-                            cpt_match = re.search(r'(\d{5})', value)
-                            if cpt_match:
-                                features.append({
-                                    "type": "cpt_code",
-                                    "values": [cpt_match.group(1)],
-                                    "present": True
-                                })
-                            continue
-
-                        # Enhanced invoice number detection
-                        if any(inv_term in feature_type.lower() for inv_term in ['invoice number', 'invoice #', 'invoice no', 'invoice id']):
-                            logger.debug(f"Processing invoice number: {value}")
-                            # Extract invoice number
-                            inv_match = re.search(r'([A-Z0-9][-A-Z0-9]*)', value)
-                            if inv_match:
-                                features.append({
-                                    "type": "invoice_number",
-                                    "values": [inv_match.group(1)],
-                                    "present": True
-                                })
-                            else:
-                                features.append({
-                                    "type": "invoice_number",
-                                    "values": [value.strip()],
-                                    "present": True
-                                })
-                            continue
-
-                        # ICD code detection
-                        icd_terms = ['icd', 'diagnosis']
-                        if any(icd_term in feature_type or icd_term in value.lower() for icd_term in icd_terms):
-                            logger.debug(f"Processing ICD code: {value}")
-                            icd_match = re.search(r'([A-Z]\d{2}(?:\.\d+)?)', value)
-                            if icd_match:
-                                features.append({
-                                    "type": "diagnosis_code",
-                                    "values": [icd_match.group(1)],
-                                    "present": True
-                                })
-                            continue
-
-                        # NPI detection
-                        if any(npi_term in feature_type for npi_term in ['npi', 'provider number']):
-                            logger.debug(f"Processing NPI: {value}")
-                            npi_match = re.search(r'(\d{10})', value)
-                            if npi_match:
-                                features.append({
-                                    "type": "provider_npi",
-                                    "values": [npi_match.group(1)],
-                                    "present": True
-                                })
-                            continue
-
-                        # Date detection
-                        date_terms = ['date', 'due', 'service', 'dos']
-                        if any(date_term in feature_type.lower() for date_term in date_terms):
-                            logger.debug(f"Processing date: {value}")
-                            date_match = re.search(r'(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})', value)
-                            if date_match:
-                                features.append({
-                                    "type": "date",
-                                    "values": [date_match.group(1)],
-                                    "present": True
-                                })
-                                continue
-                            alt_date_match = re.search(r'(\d{2,4}[-/]\d{1,2}[-/]\d{1,2})', value)
-                            if alt_date_match:
-                                features.append({
-                                    "type": "date",
-                                    "values": [alt_date_match.group(1)],
-                                    "present": True
-                                })
-                            continue
-
-                        # Amount detection
-                        amount_terms = ['amount', 'total', 'price', 'cost', '$']
-                        logger.debug(f"Checking for amount terms in feature type: {feature_type}")
-                        logger.debug(f"Checking for $ in value: {value}")
-                        if any(amount_term in feature_type.lower() for amount_term in amount_terms) or '$' in value:
-                            logger.debug(f"Processing amount: {value}")
-                            amount_match = re.search(r'\$?(\d+(?:,\d{3})*(?:\.\d{2})?)', value)
+                        elif 'bill to' in feature_type:
+                            features.append({
+                                "type": "bill_to",
+                                "values": [value],
+                                "present": True
+                            })
+                        elif any(amount_term in feature_type.lower() for amount_term in ['total', 'subtotal', 'amount', 'tax']):
+                            amount_match = re.search(r'\$?([\d,]+\.?\d*)', value)
                             if amount_match:
-                                logger.debug(f"Found amount match: {amount_match.group(0)}")
                                 features.append({
                                     "type": "amount",
-                                    "values": [amount_match.group(0)],
+                                    "values": [amount_match.group(1)],
                                     "present": True
                                 })
-                                logger.debug(f"Added amount feature: {features[-1]}")
-                            else:
-                                logger.debug(f"No amount pattern found in value: {value}")
-                            continue
+                        elif 'payment terms' in feature_type.lower():
+                            features.append({
+                                "type": "payment_terms",
+                                "values": [value],
+                                "present": True
+                            })
+                        elif 'due date' in feature_type.lower():
+                            features.append({
+                                "type": "due_date",
+                                "values": [value],
+                                "present": True
+                            })
+                        else:
+                            # Add as generic feature
+                            features.append({
+                                "type": feature_type,
+                                "values": [value],
+                                "present": True
+                            })
 
-                        # Payment terms detection
-                        payment_terms = ['payment', 'terms', 'due', 'net']
-                        logger.debug(f"Checking for payment terms in: {feature_type} - {value}")
-                        if any(term in feature_type.lower() or term in value.lower() for term in payment_terms):
-                            logger.debug(f"Processing payment terms: {value}")
-                            terms_match = re.search(r'(Net\s+\d+|Due\s+\d+(?:\s+days)?)', value, re.IGNORECASE)
-                            if terms_match:
-                                logger.debug(f"Found payment terms: {terms_match.group(1)}")
-                                features.append({
-                                    "type": "payment_terms",
-                                    "values": [terms_match.group(1)],
-                                    "present": True
-                                })
-                            else:
-                                logger.debug(f"No payment terms pattern found in value: {value}")
-                            continue
-
-                        # Add as generic feature if no specific type matched
-                        logger.debug(f"Adding generic feature - type: {feature_type}, value: {value}")
-                        current_features.append((feature_type, value))
-
-            # Add any remaining features
-            if current_features:
-                logger.debug(f"Adding remaining features: {current_features}")
-                self._add_parsed_features(features, current_features)
-
-            # Detect ambiguity
-            if feature_counts['healthcare'] > 0 and feature_counts['financial'] > 0:
-                logger.debug("Detected mixed industry signals")
-                ambiguity_detected = True
-                features.append({
-                    "type": "validation_warning",
-                    "values": ["Document contains mixed industry signals"],
-                    "present": True
-                })
-
-            # Handle incomplete responses and infer document type
-            if not doc_type or doc_type == "unknown":
-                logger.debug("Document type missing or unknown, attempting to infer from features")
-
-                # Check for strong healthcare indicators
-                healthcare_indicators = any(f["type"] == "patient_id" for f in features) or \
-                                     any(f["type"] == "cpt_code" for f in features) or \
-                                     any(f["type"] == "diagnosis_code" for f in features) or \
-                                     feature_counts['healthcare'] > feature_counts['financial'] or \
-                                     any('medical' in str(f).lower() for f in features) or \
-                                     'medical' in text.lower()
-                logger.debug(f"Healthcare indicators present: {healthcare_indicators}")
-                logger.debug(f"Healthcare feature count: {feature_counts['healthcare']}")
-                logger.debug(f"Financial feature count: {feature_counts['financial']}")
-
-                # Check for strong financial indicators
-                financial_indicators = any(f["type"] == "payment_terms" for f in features) or \
-                                    any(f["type"] == "invoice_number" for f in features) or \
-                                    feature_counts['financial'] > feature_counts['healthcare'] or \
-                                    any('invoice' in str(f).lower() for f in features) or \
-                                    'invoice' in text.lower()
-                logger.debug(f"Financial indicators present: {financial_indicators}")
-
-                if healthcare_indicators and not financial_indicators:
-                    doc_type = "medical_claim"
-                    confidence = confidence or 0.6  # Lower confidence for inferred type
-                    logger.debug("Inferred document type: medical_claim")
-                elif financial_indicators and not healthcare_indicators:
-                    doc_type = "invoice"
-                    confidence = confidence or 0.6  # Lower confidence for inferred type
-                    logger.debug("Inferred document type: invoice")
-                elif healthcare_indicators and financial_indicators:
-                    # Use industry context to break the tie
-                    if industry == "healthcare":
-                        doc_type = "medical_claim"
-                        confidence = 0.6
-                        logger.debug("Using healthcare industry context to resolve ambiguity")
-                    elif industry == "financial":
-                        doc_type = "invoice"
-                        confidence = 0.6
-                        logger.debug("Using financial industry context to resolve ambiguity")
-                    else:
-                        # Default to the type with more indicators
-                        doc_type = "medical_claim" if feature_counts['healthcare'] >= feature_counts['financial'] else "invoice"
-                        confidence = 0.5  # Low confidence due to ambiguity
-                        logger.debug(f"Defaulting to {doc_type} based on feature counts")
-                elif industry:  # If we have an industry context but no clear indicators
-                    doc_type = "medical_claim" if industry == "healthcare" else "invoice"
-                    confidence = 0.5  # Low confidence due to lack of indicators
-                    logger.debug(f"Using industry context {industry} to set default type: {doc_type}")
-                else:
-                    doc_type = "unknown"
-                    confidence = 0.5
-                    logger.debug("No clear indicators or industry context, setting type to unknown")
-
-            # Set defaults for incomplete responses
-            if not doc_type:
+            # Set defaults if needed
+            if doc_type is None:
                 doc_type = "unknown"
-                logger.debug("No document type could be inferred, setting to unknown")
-            if confidence is None:
+                confidence = 0.3
+            elif confidence is None:
                 confidence = 0.5
-                logger.debug("No confidence score found, using default: 0.5")
-
-            # Add validation warnings for missing required features
-            if doc_type == "medical_claim":
-                required_features = {"patient_id", "cpt_code", "date", "amount"}
-                found_features = {f["type"] for f in features}
-                missing = required_features - found_features
-                if missing:
-                    features.append({
-                        "type": "validation_warning",
-                        "values": [f"Missing required fields: {', '.join(missing)}"],
-                        "present": True
-                    })
-                    # Reduce confidence for missing required fields
-                    confidence *= 0.8
-            elif doc_type == "invoice":
-                required_features = {"invoice_number", "date", "amount"}
-                found_features = {f["type"] for f in features}
-                missing = required_features - found_features
-                if missing:
-                    features.append({
-                        "type": "validation_warning",
-                        "values": [f"Missing required fields: {', '.join(missing)}"],
-                        "present": True
-                    })
-                    # Reduce confidence for missing required fields
-                    confidence *= 0.8
 
             return doc_type, confidence, features
 
@@ -812,7 +594,7 @@ Format features as "Feature Type: Value" for easy parsing."""
         """
         try:
             # Validate industry if specified
-            if industry and industry not in INDUSTRY_CONFIGS:
+            if industry and industry not in self.config_manager.list_available_industries():
                 raise ValueError(f"Invalid industry: {industry}")
 
             # Use default industry if none specified
@@ -821,13 +603,28 @@ Format features as "Feature Type: Value" for easy parsing."""
             # Extract text content
             text = self.extract_text(file_path)
 
-            # Classify using LLM with industry context
+            # --- Pattern-based feature extraction ---
+            patterns = self.pattern_store.get_patterns_by_industry(target_industry)
+            pattern_matches = self.pattern_matcher.find_matches(text, patterns)
+            pattern_features = [
+                {
+                    "feature_type": m.pattern.feature_type,
+                    "text": m.text,
+                    "confidence": m.confidence.value,
+                    "context": m.context
+                }
+                for m in pattern_matches
+            ]
+
+            # --- LLM classification ---
             result = self._classify_with_llm(text, target_industry)
 
+            # TODO: Merge/resolve LLM and pattern features in a unified way
             return {
                 "class": result.doc_type,
                 "confidence": result.confidence,
-                "features": result.features
+                "features": result.features,
+                "pattern_features": pattern_features
             }
 
         except TextExtractionError as e:

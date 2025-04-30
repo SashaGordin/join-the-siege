@@ -17,4 +17,4 @@ pytesseract==0.3.10
 opencv-python==4.9.0.80
 numpy==1.26.4
 jsonschema==4.21.1
-psycopg2-binary==2.9.9  # For PostgreSQL support
+psycopg2-binary==2.9.9
