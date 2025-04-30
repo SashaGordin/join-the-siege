@@ -7,12 +7,21 @@ from openai import OpenAI
 import os
 from dotenv import load_dotenv
 from dataclasses import dataclass
+import cv2
+import numpy as np
+import pytesseract
+import httpx
+import logging
 from .exceptions import (
     ClassificationError,
     TextExtractionError,
     FeatureExtractionError
 )
 import re
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -34,7 +43,156 @@ class ContentClassifier:
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable is not set")
-        self.client = OpenAI(api_key=api_key)
+
+        # Initialize OpenAI client with only the required parameters
+        http_client = httpx.Client(
+            follow_redirects=True,
+            timeout=60.0
+        )
+        self.client = OpenAI(
+            api_key=api_key,
+            http_client=http_client
+        )
+
+        # Check if tesseract is installed
+        try:
+            pytesseract.get_tesseract_version()
+        except pytesseract.TesseractNotFoundError:
+            raise RuntimeError("Tesseract is not installed. Please install tesseract-ocr package.")
+
+    def _extract_text_from_image(self, image_path: Path) -> str:
+        """
+        Extract text from an image using OCR.
+
+        Args:
+            image_path: Path to the image file
+
+        Returns:
+            str: Extracted text
+
+        Raises:
+            TextExtractionError: If text extraction fails
+        """
+        logger.debug(f"Starting text extraction from image: {image_path}")
+
+        # First validate the image file
+        if not isinstance(image_path, (str, Path)):
+            logger.error(f"Invalid path type: {type(image_path)}")
+            raise TextExtractionError("Invalid file path type")
+
+        # Check if file exists and is not empty
+        try:
+            if not Path(image_path).exists():
+                raise TextExtractionError("File does not exist")
+            if Path(image_path).stat().st_size == 0:
+                raise TextExtractionError("File is empty")
+        except Exception as e:
+            logger.error(f"File access error: {str(e)}")
+            raise TextExtractionError(f"File access error: {str(e)}")
+
+        # Try to validate and open the image
+        try:
+            # First try to open with PIL to validate format
+            try:
+                with open(image_path, 'rb') as f:
+                    header = f.read(8)  # Read first 8 bytes
+                    if not any(header.startswith(sig) for sig in [b'\x89PNG\r\n\x1a\n', b'\xff\xd8\xff', b'GIF87a', b'GIF89a']):
+                        logger.error("Invalid image file format")
+                        raise TextExtractionError("Invalid image file format")
+            except Exception as e:
+                logger.error(f"Failed to read file header: {str(e)}")
+                raise TextExtractionError(f"Invalid image file: {str(e)}")
+
+            with Image.open(str(image_path)) as img:
+                try:
+                    img.verify()
+                    logger.debug("Image verification successful")
+                except Exception as e:
+                    logger.error(f"Image verification failed: {str(e)}")
+                    raise TextExtractionError(f"Invalid image file: {str(e)}")
+
+            # Try to read with OpenCV
+            img = cv2.imread(str(image_path))
+            if img is None:
+                logger.error("OpenCV failed to read the image")
+                raise TextExtractionError("Failed to read image file: Not a valid image format")
+
+            # Convert to grayscale
+            try:
+                logger.debug("Converting image to grayscale")
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            except cv2.error as e:
+                logger.error(f"Failed to convert image to grayscale: {str(e)}")
+                raise TextExtractionError(f"Failed to process image: {str(e)}")
+
+            # Try different preprocessing techniques
+            texts = []
+            logger.debug("Starting image preprocessing and OCR")
+
+            # Try all four orientations
+            angles = [0, 90, 180, 270]
+            for angle in angles:
+                logger.debug(f"Processing image at {angle} degrees rotation")
+                # Rotate image if needed
+                if angle != 0:
+                    height, width = gray.shape
+                    center = (width // 2, height // 2)
+                    rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+                    rotated = cv2.warpAffine(gray, rotation_matrix, (width, height),
+                                           flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+                else:
+                    rotated = gray
+
+                # 1. Basic thresholding
+                logger.debug("Applying basic thresholding")
+                _, binary = cv2.threshold(rotated, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                texts.append(pytesseract.image_to_string(binary))
+
+                # 2. Adaptive thresholding
+                logger.debug("Applying adaptive thresholding")
+                binary_adaptive = cv2.adaptiveThreshold(
+                    rotated, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+                )
+                texts.append(pytesseract.image_to_string(binary_adaptive))
+
+                # 3. Denoised version
+                logger.debug("Applying denoising")
+                denoised = cv2.fastNlMeansDenoising(rotated)
+                texts.append(pytesseract.image_to_string(denoised))
+
+                # Try different PSM modes
+                psm_modes = ['--psm 6', '--psm 1', '--psm 3']
+                for psm in psm_modes:
+                    logger.debug(f"Trying OCR with PSM mode: {psm}")
+                    texts.append(pytesseract.image_to_string(binary, config=psm))
+                    texts.append(pytesseract.image_to_string(binary_adaptive, config=psm))
+                    texts.append(pytesseract.image_to_string(denoised, config=psm))
+
+            # Choose the best result
+            logger.debug("Selecting best OCR result")
+            def score_text(text):
+                # Count alphanumeric characters
+                alnum_count = sum(c.isalnum() for c in text)
+                # Bonus points for numbers
+                number_count = sum(c.isdigit() for c in text) * 2
+                # Bonus points for common document keywords
+                keyword_bonus = sum(10 for keyword in ['INVOICE', 'TOTAL', 'AMOUNT', 'DATE']
+                                  if keyword in text.upper())
+                return alnum_count + number_count + keyword_bonus
+
+            best_text = max(texts, key=score_text)
+            logger.debug(f"Text extraction completed. Found text: {best_text[:50]}...")
+            return best_text.strip()
+
+        except Exception as e:
+            logger.error(f"Error during text extraction: {str(e)}", exc_info=True)
+            if isinstance(e, TextExtractionError):
+                raise  # Re-raise TextExtractionError as is
+            elif isinstance(e, pytesseract.TesseractError):
+                if "Too few characters" in str(e):
+                    logger.debug("Tesseract found no text in image")
+                    return ""  # Return empty string for images with no text
+            raise TextExtractionError(f"Failed to extract text from image: {str(e)}")
 
     def extract_text(self, file_path: Union[str, Path]) -> str:
         """
@@ -57,7 +215,7 @@ class ContentClassifier:
             if mime_type == 'application/pdf':
                 return self._extract_text_from_pdf(file_path)
             elif mime_type.startswith('image/'):
-                raise NotImplementedError("OCR not implemented yet")
+                return self._extract_text_from_image(file_path)
             else:
                 # For text files or unknown types, try reading as text with different encodings
                 try:
