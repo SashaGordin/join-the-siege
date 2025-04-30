@@ -1,0 +1,122 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["industry_name", "version", "features"],
+  "properties": {
+    "industry_name": {
+      "type": "string",
+      "description": "Unique identifier for the industry"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version of the configuration"
+    },
+    "description": {
+      "type": "string",
+      "description": "Description of the industry and its document types"
+    },
+    "features": {
+      "type": "object",
+      "required": ["shared", "specific"],
+      "properties": {
+        "shared": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of shared feature IDs used by this industry"
+        },
+        "specific": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/feature"
+          },
+          "description": "Industry-specific features"
+        },
+        "validation_rules": {
+          "type": "object",
+          "properties": {
+            "required_features": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "Industry-specific validation rules"
+        },
+        "confidence_thresholds": {
+          "type": "object",
+          "properties": {
+            "minimum": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "high": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "feature": {
+      "type": "object",
+      "required": ["type", "importance", "patterns", "validation"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Type of the feature"
+        },
+        "importance": {
+          "type": "string",
+          "enum": ["required", "recommended", "optional"],
+          "description": "Importance level of the feature"
+        },
+        "patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Regex patterns for feature detection"
+        },
+        "validation": {
+          "type": "object",
+          "required": ["format", "rules"],
+          "properties": {
+            "format": {
+              "type": "string",
+              "description": "Expected format of the feature value"
+            },
+            "rules": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["type", "value"],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": ["regex", "length", "range", "enum"],
+                    "description": "Type of validation rule"
+                  },
+                  "value": {
+                    "description": "Value for the validation rule"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "description": {
+          "type": "string",
+          "description": "Description of the feature"
+        }
+      }
+    }
+  }
+}

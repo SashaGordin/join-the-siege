@@ -16,13 +16,14 @@ from src.classifier.exceptions import (
     TextExtractionError,
     ClassificationError
 )
-from src.classifier.industry_config import INDUSTRY_CONFIGS
+from src.classifier.config.config_manager import IndustryConfigManager
 
 app = Flask(__name__)
 
-# Initialize our file validator and classifier
+# Initialize our file validator, classifier, and config manager
 file_validator = FileValidator()
 content_classifier = ContentClassifier()
+config_manager = IndustryConfigManager()
 
 def save_uploaded_file(uploaded_file):
     """
@@ -65,8 +66,15 @@ def classify_file_route():
 
     # Get industry parameter if provided
     industry = request.form.get('industry')
-    if industry and industry not in INDUSTRY_CONFIGS:
-        return jsonify({"error": f"Invalid industry: {industry}. Valid options are: {', '.join(INDUSTRY_CONFIGS.keys())}"}), 400
+    if industry:
+        try:
+            # Verify industry exists
+            config_manager.load_industry_config(industry)
+        except ValueError as e:
+            available_industries = config_manager.list_available_industries()
+            return jsonify({
+                "error": f"Invalid industry: {industry}. Valid options are: {', '.join(available_industries)}"
+            }), 400
 
     temp_path = None
     try:
@@ -152,24 +160,28 @@ def classify_file_route():
 @app.route('/industries', methods=['GET'])
 def list_industries():
     """List available industry configurations."""
-    industries = {}
-    for industry_id, config in INDUSTRY_CONFIGS.items():
-        industries[industry_id] = {
-            "name": config.name,
-            "description": config.description,
-            "document_types": [
-                {
-                    "name": dt.name,
-                    "description": dt.description,
-                    "required_features": [
-                        f.name for f in dt.features
-                        if f.importance.value == "required"
-                    ]
-                }
-                for dt in config.document_types
-            ]
-        }
-    return jsonify(industries), 200
+    try:
+        industries = {}
+        available_industries = config_manager.list_available_industries()
+
+        for industry_id in available_industries:
+            config = config_manager.load_industry_config(industry_id)
+            industries[industry_id] = {
+                "name": config["industry_name"],
+                "description": config["description"],
+                "features": {
+                    "shared": list(config["features"]["shared"].keys()),
+                    "specific": {
+                        name: feature["description"]
+                        for name, feature in config["features"]["specific"].items()
+                    }
+                },
+                "validation_rules": config["features"]["validation_rules"],
+                "confidence_thresholds": config["features"]["confidence_thresholds"]
+            }
+        return jsonify(industries), 200
+    except Exception as e:
+        return jsonify({"error": f"Failed to list industries: {str(e)}"}), 500
 
 @app.route('/preview_file', methods=['POST'])
 def preview_file_route():

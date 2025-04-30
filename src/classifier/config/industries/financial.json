@@ -1,0 +1,82 @@
+{
+  "industry_name": "financial",
+  "version": "1.0.0",
+  "description": "Financial industry document configuration",
+  "features": {
+    "shared": ["date", "amount", "identifier"],
+    "specific": {
+      "invoice_number": {
+        "type": "identifier",
+        "importance": "required",
+        "patterns": [
+          "(?:INV|INVOICE)[-:]?\\s*[A-Z0-9-]+",
+          "Invoice\\s+Number[-:]?\\s*[A-Z0-9-]+"
+        ],
+        "validation": {
+          "format": "alphanumeric",
+          "rules": [
+            {
+              "type": "regex",
+              "value": "^[A-Z0-9-]+$"
+            }
+          ]
+        },
+        "description": "Invoice identification number"
+      },
+      "payment_terms": {
+        "type": "terms",
+        "importance": "recommended",
+        "patterns": [
+          "Net\\s+\\d+",
+          "Due\\s+(?:on|in)\\s+\\d+\\s+days",
+          "Terms[-:]?\\s*Net\\s*\\d+"
+        ],
+        "validation": {
+          "format": "text",
+          "rules": [
+            {
+              "type": "regex",
+              "value": "^(?:Net\\s+\\d+|Due\\s+(?:on|in)\\s+\\d+\\s+days)$"
+            }
+          ]
+        },
+        "description": "Payment terms"
+      },
+      "account_number": {
+        "type": "identifier",
+        "importance": "required",
+        "patterns": [
+          "(?:Account|Acct)[-:]?\\s*[A-Z0-9-]+",
+          "Account\\s+Number[-:]?\\s*[A-Z0-9-]+"
+        ],
+        "validation": {
+          "format": "alphanumeric",
+          "rules": [
+            {
+              "type": "regex",
+              "value": "^[A-Z0-9-]+$"
+            }
+          ]
+        },
+        "description": "Bank account number"
+      }
+    },
+    "validation_rules": {
+      "required_features": ["date", "amount"],
+      "conditional_rules": [
+        {
+          "if": "document_type == 'invoice'",
+          "then": ["invoice_number", "payment_terms"]
+        },
+        {
+          "if": "document_type == 'bank_statement'",
+          "then": ["account_number"]
+        }
+      ]
+    },
+    "confidence_thresholds": {
+      "minimum": 0.7,
+      "high": 0.9
+    }
+  }
+}

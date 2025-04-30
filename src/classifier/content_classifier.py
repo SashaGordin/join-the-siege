@@ -17,13 +17,7 @@ from .exceptions import (
     TextExtractionError,
     FeatureExtractionError
 )
-from .industry_config import (
-    INDUSTRY_CONFIGS,
-    IndustryConfig,
-    DocumentTypeConfig,
-    FeatureDefinition,
-    FeatureImportance
-)
+from .config.config_manager import IndustryConfigManager
 import re
 
 # Configure logging
@@ -53,6 +47,7 @@ class ContentClassifier:
         """
         self.mime_magic = magic.Magic(mime=True)
         self.default_industry = default_industry
+        self.config_manager = IndustryConfigManager()
 
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
@@ -76,23 +71,38 @@ class ContentClassifier:
 
     def _get_industry_prompt(self, industry: str) -> str:
         """Get industry-specific prompt additions."""
-        if industry == "healthcare":
-            return """Industry Context: healthcare
+        try:
+            industry_config = self.config_manager.load_industry_config(industry)
+
+            if industry == "healthcare":
+                features = industry_config["features"]
+                required = features["validation_rules"]["required_features"]
+                specific = features["specific"]
+
+                return f"""Industry Context: healthcare
 Focus on medical document features and classify as medical documents when appropriate:
-- Patient information (required for medical documents)
-- CPT and ICD codes (required for medical claims)
-- Provider details
-- Service dates
-- Medical charges"""
-        elif industry == "financial":
-            return """Industry Context: financial
+- Patient information ({specific["patient_id"]["description"]})
+- Medical codes ({specific["medical_code"]["description"]})
+- Provider details (NPI: {specific["provider_npi"]["description"]})
+- Required features: {', '.join(required)}"""
+
+            elif industry == "financial":
+                features = industry_config["features"]
+                required = features["validation_rules"]["required_features"]
+                specific = features["specific"]
+
+                return f"""Industry Context: financial
 Focus on financial document features and classify as financial documents when appropriate:
-- Invoice numbers (required for invoices)
-- Payment terms
-- Due dates
-- Line items
-- Total amounts
+- Invoice numbers ({specific["invoice_number"]["description"]})
+- Payment terms ({specific["payment_terms"]["description"]})
+- Account numbers ({specific["account_number"]["description"]})
+- Required features: {', '.join(required)}
 Do not classify as medical documents unless absolutely certain."""
+
+        except Exception as e:
+            logger.warning(f"Failed to load industry config for prompt: {str(e)}")
+            return ""
+
         return ""
 
     def _extract_text_from_image(self, image_path: Path) -> str:

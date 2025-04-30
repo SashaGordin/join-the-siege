@@ -1,0 +1,78 @@
+{
+  "industry_name": "healthcare",
+  "version": "1.0.0",
+  "description": "Healthcare industry document configuration",
+  "features": {
+    "shared": ["date", "amount", "identifier"],
+    "specific": {
+      "patient_id": {
+        "type": "patient_identifier",
+        "importance": "required",
+        "patterns": [
+          "(?:Patient|ID)[-:]?\\s*[A-Z0-9-]+",
+          "MRN[-:]?\\s*\\d+",
+          "Chart[-:]?\\s*[A-Z0-9]+"
+        ],
+        "validation": {
+          "format": "alphanumeric",
+          "rules": [
+            {
+              "type": "regex",
+              "value": "^[A-Z0-9-]+$"
+            }
+          ]
+        },
+        "description": "Patient identification number"
+      },
+      "medical_code": {
+        "type": "procedure_code",
+        "importance": "required",
+        "patterns": [
+          "(?:CPT|ICD)-?10?:?\\s*(\\d{4,5}(?:\\.\\d{1,2})?)",
+          "(?:CPT|ICD)-?10?\\s*(\\d{4,5}(?:\\.\\d{1,2})?)"
+        ],
+        "validation": {
+          "format": "code",
+          "rules": [
+            {
+              "type": "regex",
+              "value": "^\\d{4,5}(?:\\.\\d{1,2})?$"
+            }
+          ]
+        },
+        "description": "Medical procedure or diagnosis codes"
+      },
+      "provider_npi": {
+        "type": "npi",
+        "importance": "recommended",
+        "patterns": [
+          "NPI[-:]?\\s*(\\d{10})",
+          "Provider\\s+ID[-:]?\\s*(\\d{10})"
+        ],
+        "validation": {
+          "format": "numeric",
+          "rules": [
+            {
+              "type": "regex",
+              "value": "^\\d{10}$"
+            }
+          ]
+        },
+        "description": "National Provider Identifier"
+      }
+    },
+    "validation_rules": {
+      "required_features": ["patient_id", "medical_code", "date"],
+      "conditional_rules": [
+        {
+          "if": "document_type == 'claim'",
+          "then": ["amount", "provider_npi"]
+        }
+      ]
+    },
+    "confidence_thresholds": {
+      "minimum": 0.6,
+      "high": 0.8
+    }
+  }
+}

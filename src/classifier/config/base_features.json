@@ -1,0 +1,100 @@
+{
+  "features": {
+    "date": {
+      "type": "date",
+      "patterns": [
+        "\\d{1,2}[-/]\\d{1,2}[-/]\\d{2,4}",
+        "\\d{4}-\\d{2}-\\d{2}",
+        "(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \\d{1,2},? \\d{4}"
+      ],
+      "validation": {
+        "format": "date",
+        "rules": [
+          {
+            "type": "regex",
+            "value": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        ]
+      },
+      "description": "Date values in various formats",
+      "examples": [
+        "2024-03-15",
+        "03/15/2024",
+        "March 15, 2024"
+      ]
+    },
+    "amount": {
+      "type": "amount",
+      "patterns": [
+        "\\$\\d+(?:,\\d{3})*(?:\\.\\d{2})?",
+        "€\\d+(?:,\\d{3})*(?:\\.\\d{2})?",
+        "£\\d+(?:,\\d{3})*(?:\\.\\d{2})?"
+      ],
+      "validation": {
+        "format": "currency",
+        "rules": [
+          {
+            "type": "regex",
+            "value": "^[\\$€£]\\d+(?:,\\d{3})*(?:\\.\\d{2})?$"
+          }
+        ]
+      },
+      "description": "Monetary amounts in various currencies",
+      "examples": [
+        "$1,234.56",
+        "€1000.00",
+        "£500.00"
+      ]
+    },
+    "identifier": {
+      "type": "identifier",
+      "patterns": [
+        "[A-Z0-9]+-\\d{4}-\\d{3,}",
+        "ID[-:]?\\s*[A-Z0-9-]+",
+        "[A-Z]{2,}-\\d{5,}"
+      ],
+      "validation": {
+        "format": "alphanumeric",
+        "rules": [
+          {
+            "type": "regex",
+            "value": "^[A-Z0-9-]+$"
+          },
+          {
+            "type": "length",
+            "value": {"min": 5, "max": 50}
+          }
+        ]
+      },
+      "description": "Generic identifier patterns",
+      "examples": [
+        "INV-2024-001",
+        "ID: ABC12345",
+        "DOC-12345"
+      ]
+    },
+    "signature": {
+      "type": "signature",
+      "patterns": [
+        "Signed[:]?\\s+[A-Za-z\\s,\\.]+",
+        "Signature[:]?\\s*[_]{3,}",
+        "/s/\\s*[A-Za-z\\s,\\.]+"
+      ],
+      "validation": {
+        "format": "text",
+        "rules": [
+          {
+            "type": "regex",
+            "value": "^(Signed:|Signature:|/s/)\\s*[A-Za-z\\s,\\.]+$"
+          }
+        ]
+      },
+      "description": "Signature blocks and electronic signatures",
+      "examples": [
+        "Signed: John Doe",
+        "Signature: _______",
+        "/s/ Jane Smith"
+      ]
+    }
+  }
+}

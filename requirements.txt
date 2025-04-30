@@ -10,3 +10,4 @@ python-dotenv==1.0.0
 pytesseract==0.3.10
 opencv-python==4.9.0.80
 numpy==1.26.4
+jsonschema==4.21.1

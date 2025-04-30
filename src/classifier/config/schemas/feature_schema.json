@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["features"],
+  "properties": {
+    "features": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["type", "patterns", "validation"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Type of the shared feature"
+          },
+          "patterns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Regex patterns for feature detection"
+          },
+          "validation": {
+            "type": "object",
+            "properties": {
+              "format": {
+                "type": "string",
+                "description": "Expected format of the feature value"
+              },
+              "rules": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["type", "value"],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": ["regex", "length", "range", "enum"],
+                      "description": "Type of validation rule"
+                    },
+                    "value": {
+                      "description": "Value for the validation rule"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "description": {
+            "type": "string",
+            "description": "Description of the shared feature"
+          },
+          "examples": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Example values for this feature"
+          }
+        }
+      }
+    }
+  }
+}
