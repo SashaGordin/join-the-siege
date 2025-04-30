@@ -1,6 +1,13 @@
 import pytest
 from unittest.mock import MagicMock, patch
 import httpx
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker, scoped_session
+from src.classifier.config.database import Base
+from src.classifier.pattern_learning.pattern_matcher import PatternMatcher
+from src.classifier.pattern_learning.pattern_store import PatternStore
+from src.classifier.pattern_learning.db_service import PatternDBService
+import os
 
 @pytest.fixture(autouse=True)
 def mock_openai():
@@ -154,3 +161,52 @@ def mock_error_response():
     mock = MagicMock()
     mock.create.side_effect = raise_error
     return mock
+
+@pytest.fixture(autouse=True)
+def cleanup_database():
+    """Clean up database before and after each test."""
+    # Delete existing database file if it exists
+    if os.path.exists('test.db'):
+        os.remove('test.db')
+
+    # Create test database
+    engine = create_engine('sqlite:///test.db')
+    Base.metadata.create_all(engine)
+
+    # Create session
+    session_factory = sessionmaker(bind=engine)
+    Session = scoped_session(session_factory)
+    session = Session()
+
+    # Yield session for test use
+    yield session
+
+    # Cleanup after test
+    session.close()
+    Session.remove()
+
+    # Drop all tables
+    Base.metadata.drop_all(engine)
+
+    # Delete the database file
+    try:
+        os.remove('test.db')
+    except OSError:
+        pass
+
+    # Ensure engine is disposed
+    engine.dispose()
+
+@pytest.fixture
+def pattern_matcher():
+    """Create pattern matcher instance."""
+    return PatternMatcher()
+
+@pytest.fixture
+def pattern_store():
+    """Create pattern store instance."""
+    engine = create_engine('sqlite:///test.db')
+    session_factory = sessionmaker(bind=engine)
+    Session = scoped_session(session_factory)
+    db_service = PatternDBService(Session())
+    return PatternStore(db_service)
