@@ -79,30 +79,14 @@ class Pattern:
             try:
                 re.compile(self.expression)
             except re.error as e:
-                # Add warning but don't raise error for test patterns
-                if self.id.startswith('test_'):
-                    self.metadata["validation_warnings"] = \
-                        self.metadata.get("validation_warnings", []) + [str(e)]
-                else:
-                    raise ValueError(f"Invalid regex pattern: {e}")
+                # Store validation error in metadata instead of raising
+                self.metadata["validation_error"] = str(e)
+                self.metadata["is_valid"] = False
+                # Don't raise error - let the pattern matcher handle invalid patterns
+                return
 
-            # Check for common regex issues
-            if ".*.*" in self.expression:
-                self.metadata["validation_warnings"] = \
-                    self.metadata.get("validation_warnings", []) + ["Multiple consecutive wildcards"]
-
-            if self.expression.count('(') != self.expression.count(')'):
-                self.metadata["validation_warnings"] = \
-                    self.metadata.get("validation_warnings", []) + ["Unmatched parentheses"]
-
-        elif self.type == PatternType.FUZZY:
-            if not self.examples and not self.id.startswith('test_'):
-                raise ValueError("Fuzzy patterns require examples")
-
-        elif self.type == PatternType.CONTEXT:
-            if not self.metadata.get("expected_section"):
-                self.metadata["validation_warnings"] = \
-                    self.metadata.get("validation_warnings", []) + ["No expected section specified"]
+        # Mark pattern as valid if no errors found
+        self.metadata["is_valid"] = True
 
     def _extract_metadata(self):
         """Extract and validate pattern metadata."""
@@ -152,54 +136,88 @@ class Pattern:
         self.confidence.value = round((precision * 0.4 + recall * 0.4 + f1 * 0.2), 3)
         self.updated_at = datetime.now()
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert Pattern to dictionary for JSON serialization."""
+        return {
+            'id': self.id,
+            'type': self.type.value,  # Convert enum to string
+            'expression': self.expression,
+            'feature_type': self.feature_type,
+            'industry': self.industry,
+            'metadata': self.metadata,
+            'examples': self.examples,
+            'named_groups': self.named_groups,
+            'confidence': {
+                'value': self.confidence.value,
+                'factors': self.confidence.factors
+            }
+        }
 
-@dataclass
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Pattern':
+        """Create Pattern from dictionary."""
+        confidence_data = data.pop('confidence', {'value': 1.0, 'factors': {}})
+        data['type'] = PatternType(data['type'])  # Convert string back to enum
+        data['confidence'] = ConfidenceScore(
+            value=confidence_data['value'],
+            factors=confidence_data.get('factors', {})
+        )
+        return cls(**data)
+
+
 class PatternMatch:
-    """
-    Represents a match found by a pattern.
+    """Represents a pattern match found in text."""
 
-    Attributes:
-        pattern: Pattern that found the match
-        text: Matched text
-        start: Start position in source text
-        end: End position in source text
-        match_type: Type of match
-        confidence: Confidence in this match
-        context: Contextual information including:
-            - section: Document section
-            - section_type: Type of section
-            - proximity_features: Nearby features
-            - semantic_context: Semantic information
-            - hierarchy_level: Section hierarchy level
-            - named_groups: Named group matches
-    """
-    pattern: Pattern
-    text: str
-    start: int
-    end: int
-    match_type: MatchType
-    confidence: ConfidenceScore
-    context: Dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def length(self) -> int:
-        """Get length of matched text."""
-        return self.end - self.start
+    def __init__(
+        self,
+        pattern: 'Pattern',
+        text: str,
+        start: int,
+        end: int,
+        match_type: MatchType,
+        confidence: ConfidenceScore,
+        context: Optional[Dict[str, Any]] = None
+    ):
+        self.pattern = pattern
+        self.text = text
+        self.start = start
+        self.end = end
+        self.match_type = match_type
+        self.confidence = confidence
+        self.context = context or {}
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert match to dictionary representation."""
+        """Convert match to dictionary for serialization."""
         return {
-            "pattern_id": self.pattern.id,
-            "text": self.text,
-            "start": self.start,
-            "end": self.end,
-            "match_type": self.match_type.value,
-            "confidence": {
-                "value": self.confidence.value,
-                "factors": self.confidence.factors
+            'pattern': self.pattern.to_dict() if self.pattern else None,
+            'text': self.text,
+            'start': self.start,
+            'end': self.end,
+            'match_type': self.match_type.value if isinstance(self.match_type, MatchType) else self.match_type,
+            'confidence': {
+                'value': self.confidence.value,
+                'factors': self.confidence.factors
             },
-            "context": self.context
+            'context': self.context
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'PatternMatch':
+        """Create match from dictionary."""
+        pattern = Pattern.from_dict(data['pattern']) if data.get('pattern') else None
+        confidence = ConfidenceScore(
+            value=data['confidence']['value'],
+            factors=data['confidence']['factors']
+        )
+        return cls(
+            pattern=pattern,
+            text=data['text'],
+            start=data['start'],
+            end=data['end'],
+            match_type=MatchType(data['match_type']) if isinstance(data['match_type'], str) else data['match_type'],
+            confidence=confidence,
+            context=data.get('context', {})
+        )
 
 
 @dataclass

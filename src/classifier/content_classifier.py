@@ -19,7 +19,7 @@ from .exceptions import (
 )
 from .config.config_manager import IndustryConfigManager
 import re
-from src.classifier.pattern_learning.pattern_matcher import PatternMatcher
+from src.classifier.pattern_learning.cached_pattern_matcher import CachedPatternMatcher
 from src.classifier.pattern_learning.pattern_store import PatternStore
 
 # Configure logging
@@ -72,7 +72,7 @@ class ContentClassifier:
             raise RuntimeError("Tesseract is not installed. Please install tesseract-ocr package.")
 
         self.pattern_store = PatternStore()
-        self.pattern_matcher = PatternMatcher()
+        self.pattern_matcher = CachedPatternMatcher()
 
     def _get_industry_prompt(self, industry: str) -> str:
         """Get industry-specific prompt additions."""

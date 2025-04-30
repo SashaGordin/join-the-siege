@@ -336,17 +336,70 @@ class PatternMatcher:
 
         # For name patterns, use specialized matching
         if pattern.metadata.get('is_name', False):
-            # Split text into lines to handle each name separately
-            lines = text.split('\n')
+            # Split text into potential name chunks
+            text_chunks = self._get_text_chunks(text)
 
-            # Title mappings for name matching
-            title_variants = {
-                "Dr.": ["Dr.", "Dr", "Doctor"],
-                "Prof.": ["Prof.", "Prof", "Professor"],
-                "Mr.": ["Mr.", "Mr", "Mister"],
-                "Mrs.": ["Mrs.", "Mrs", "Missus"],
-                "Ms.": ["Ms.", "Ms", "Miss"]
-            }
+            for chunk in text_chunks:
+                chunk = chunk.strip()
+                if not chunk:
+                    continue
+
+                # Compare with examples
+                max_score = 0
+                best_example = None
+                best_factors = {}
+
+                for example in pattern.examples:
+                    # Calculate similarity scores
+                    seq_ratio = SequenceMatcher(None, chunk.lower(), example.lower()).ratio()
+                    lev_ratio = 1 - (levenshtein_distance(chunk, example) / max(len(chunk), len(example)))
+                    ngram_ratio = self._calculate_ngram_similarity(chunk, example)
+                    phonetic_ratio = self._calculate_phonetic_similarity(chunk, example)
+
+                    # Calculate name-specific confidence
+                    confidence = self._calculate_name_confidence(
+                        seq_ratio,
+                        lev_ratio,
+                        ngram_ratio,
+                        phonetic_ratio,
+                        chunk,
+                        example
+                    )
+
+                    if confidence > max_score:
+                        max_score = confidence
+                        best_example = example
+                        best_factors = {
+                            'sequence_match': seq_ratio,
+                            'levenshtein': lev_ratio,
+                            'ngram': ngram_ratio,
+                            'phonetic': phonetic_ratio,
+                            'matched_example': example
+                        }
+
+                # Only create a match if the score is high enough
+                if max_score >= pattern.metadata.get('min_confidence', self.min_confidence):
+                    # Find position in original text
+                    start_pos = text.lower().find(chunk.lower())
+                    if start_pos >= 0:
+                        matches.append(
+                            PatternMatch(
+                                pattern=pattern,
+                                text=chunk,
+                                start=start_pos,
+                                end=start_pos + len(chunk),
+                                match_type=MatchType.PARTIAL,
+                                confidence=ConfidenceScore(
+                                    value=max_score,
+                                    factors=best_factors
+                                )
+                            )
+                        )
+
+        # For address patterns, use specialized matching
+        elif pattern.metadata.get('is_address', False):
+            # Split text into lines to handle each address separately
+            lines = text.split('\n')
 
             # Process each line
             for line_num, line in enumerate(lines):
@@ -354,78 +407,72 @@ class PatternMatcher:
                 if not line:
                     continue
 
-                # Find potential name matches in this line
-                found_title = None
-                for title, variants in title_variants.items():
-                    if any(variant in line for variant in variants):
-                        found_title = title
-                        break
+                # Parse the input address
+                text_parts = self._parse_address(line)
+                if not text_parts:
+                    continue
+
+                text_num, text_name, text_type = text_parts
 
                 # Compare with examples
                 max_score = 0
                 best_example = None
                 best_factors = {}
 
-                # Check for initial pattern (e.g., "J. Smith")
-                initial_match = re.match(r'^([A-Z]\.)\s+(\w+)$', line)
-                has_initial = bool(initial_match)
-
                 for example in pattern.examples:
-                    # Calculate various similarity scores
-                    seq_ratio = SequenceMatcher(None, line.lower(), example.lower()).ratio()
-                    lev_ratio = 1 - (levenshtein_distance(line, example) / max(len(line), len(example)))
-                    ngram_ratio = self._calculate_ngram_similarity(line, example)
-                    phonetic_ratio = self._calculate_phonetic_similarity(line, example)
+                    # Parse example address
+                    example_parts = self._parse_address(example)
+                    if not example_parts:
+                        continue
 
-                    # Special handling for initials
-                    if has_initial:
-                        initial, last_name = initial_match.groups()
-                        example_parts = example.split()
-                        if len(example_parts) >= 2:
-                            example_first = example_parts[0]
-                            example_last = example_parts[-1]
+                    example_num, example_name, example_type = example_parts
 
-                            # Check if initial matches first letter of example first name
-                            if initial[0] == example_first[0]:
-                                seq_ratio = max(seq_ratio, 0.8)  # Boost sequence match
-                                phonetic_ratio = max(phonetic_ratio, 0.8)  # Boost phonetic match
+                    # Calculate component similarities
+                    number_sim = 1.0 if text_num == example_num else 0.0
 
-                            # Compare last names
-                            if last_name == example_last:
-                                seq_ratio = max(seq_ratio, 0.9)  # Strong boost for exact last name match
-                                lev_ratio = max(lev_ratio, 0.9)
-                                phonetic_ratio = max(phonetic_ratio, 0.9)
+                    # Street name similarity using sequence matcher
+                    name_sim = SequenceMatcher(None, text_name.lower(), example_name.lower()).ratio()
 
-                    # Calculate weighted score with emphasis on phonetic and sequence matching
-                    score = (
-                        (seq_ratio * 0.3) +
-                        (lev_ratio * 0.2) +
-                        (ngram_ratio * 0.2) +
-                        (phonetic_ratio * 0.3)
-                    )
+                    # Street type similarity using normalization
+                    type_map = {
+                        'st': 'street', 'str': 'street', 'street': 'street',
+                        'ave': 'avenue', 'av': 'avenue', 'avenue': 'avenue',
+                        'rd': 'road', 'road': 'road',
+                        'ln': 'lane', 'lane': 'lane',
+                        'dr': 'drive', 'drive': 'drive',
+                        'blvd': 'boulevard', 'boulevard': 'boulevard'
+                    }
+                    text_type_norm = type_map.get(text_type.lower(), text_type.lower())
+                    example_type_norm = type_map.get(example_type.lower(), example_type.lower())
+                    type_sim = 1.0 if text_type_norm == example_type_norm else 0.0
 
-                    # Apply title match boost
-                    example_title = next((t for t, v in title_variants.items()
-                                       if any(var in example for var in v)), None)
-                    if example_title and found_title:
-                        if example_title == found_title:
-                            score = min(1.0, score * 1.2)  # 20% boost for exact title match
-                        else:
-                            score = min(1.0, score * 1.1)  # 10% boost for any title match
+                    # Calculate weighted score with strict requirements
+                    score = 0.0  # Start with zero score
+
+                    # Only proceed if number matches exactly
+                    if number_sim == 1.0:
+                        # Street name must be very similar
+                        if name_sim >= 0.8:
+                            # Street type must match after normalization
+                            if type_sim == 1.0:
+                                score = (
+                                    (number_sim * 0.4) +
+                                    (name_sim * 0.4) +
+                                    (type_sim * 0.2)
+                                )
 
                     # Store best match
                     if score > max_score:
                         max_score = score
                         best_example = example
                         best_factors = {
-                            'sequence_match': seq_ratio,
-                            'levenshtein': lev_ratio,
-                            'ngram': ngram_ratio,
-                            'phonetic': phonetic_ratio
+                            'sequence_match': name_sim,
+                            'number_match': number_sim,
+                            'type_match': type_sim
                         }
 
-                if max_score >= pattern.metadata.get('min_confidence', self.min_confidence):
-                    # Calculate line start position
+                # Only create a match if the score is high enough
+                if max_score >= 0.8:  # Increased threshold for stricter matching
                     start_pos = sum(len(l) + 1 for l in lines[:line_num])
                     matches.append(
                         PatternMatch(
@@ -440,79 +487,90 @@ class PatternMatcher:
                             )
                         )
                     )
+
         else:
-            # Default fuzzy matching for non-name patterns
-            # For addresses, try different word orders
-            if pattern.metadata.get('is_address', True):  # Default to True for backward compatibility
-                # Split components and try different orderings
-                components = text.split()
-                if components:
-                    # Try to identify number, street name, and type
-                    number = next((c for c in components if c.isdigit()), None)
-                    street_type = next((c for c in components if c.lower() in ['street', 'st', 'avenue', 'ave', 'road', 'rd']), None)
-                    street_name = [c for c in components if c != number and c != street_type]
+            # Regular fuzzy matching for non-address patterns
+            # Split text into words for word-by-word matching
+            words = text.lower().split()
 
-                    if number and street_name:  # Must have at least a number and street name
-                        # Try standard order: "123 Main Street"
-                        standard_order = f"{number} {' '.join(street_name)}"
-                        if street_type:
-                            standard_order += f" {street_type}"
+            for word_idx, word in enumerate(words):
+                word_start = len(' '.join(words[:word_idx])) + (word_idx > 0)
+                word_end = word_start + len(word)
 
-                        # Calculate similarity with standard order
-                        for example in pattern.examples:
-                            seq_ratio = SequenceMatcher(None, standard_order.lower(), example.lower()).ratio()
-                            lev_ratio = 1 - (levenshtein_distance(standard_order, example) / max(len(standard_order), len(example)))
-                            ngram_ratio = self._calculate_ngram_similarity(standard_order, example)
+                best_score = 0
+                best_factors = {}
+                best_example = None
 
-                            confidence = self._calculate_text_confidence(seq_ratio, lev_ratio, ngram_ratio)
-
-                            if confidence >= pattern.metadata.get('min_confidence', self.min_confidence):
-                                matches.append(
-                                    PatternMatch(
-                                        pattern=pattern,
-                                        text=text,
-                                        start=0,
-                                        end=len(text),
-                                        match_type=MatchType.PARTIAL,
-                                        confidence=ConfidenceScore(
-                                            value=confidence,
-                                            factors={
-                                                'sequence_match': seq_ratio,
-                                                'levenshtein': lev_ratio,
-                                                'ngram': ngram_ratio
-                                            }
-                                        )
-                                    )
-                                )
-            else:
-                # Regular fuzzy matching for other patterns
                 for example in pattern.examples:
-                    seq_ratio = SequenceMatcher(None, text.lower(), example.lower()).ratio()
-                    lev_ratio = 1 - (levenshtein_distance(text, example) / max(len(text), len(example)))
-                    ngram_ratio = self._calculate_ngram_similarity(text, example)
+                    # Calculate similarity scores
+                    seq_ratio = SequenceMatcher(None, word.lower(), example.lower()).ratio()
+                    lev_ratio = 1 - (levenshtein_distance(word, example) / max(len(word), len(example)))
+                    ngram_ratio = self._calculate_ngram_similarity(word, example)
 
-                    confidence = self._calculate_text_confidence(seq_ratio, lev_ratio, ngram_ratio)
+                    confidence = self._calculate_text_confidence(
+                        seq_ratio,
+                        lev_ratio,
+                        ngram_ratio,
+                        word,  # Pass the current word
+                        example  # Pass the example
+                    )
 
-                    if confidence >= pattern.metadata.get('min_confidence', self.min_confidence):
-                        matches.append(
-                            PatternMatch(
-                                pattern=pattern,
-                                text=text,
-                                start=0,
-                                end=len(text),
-                                match_type=MatchType.PARTIAL,
-                                confidence=ConfidenceScore(
-                                    value=confidence,
-                                    factors={
-                                        'sequence_match': seq_ratio,
-                                        'levenshtein': lev_ratio,
-                                        'ngram': ngram_ratio
-                                    }
-                                )
+                    if confidence > best_score:
+                        best_score = confidence
+                        best_example = example
+                        best_factors = {
+                            'sequence_match': seq_ratio,
+                            'levenshtein': lev_ratio,
+                            'ngram': ngram_ratio,
+                            'matched_example': example
+                        }
+
+                if best_score >= pattern.metadata.get('min_confidence', self.min_confidence):
+                    matches.append(
+                        PatternMatch(
+                            pattern=pattern,
+                            text=word,
+                            start=word_start,
+                            end=word_end,
+                            match_type=MatchType.PARTIAL,
+                            confidence=ConfidenceScore(
+                                value=best_score,
+                                factors=best_factors
                             )
                         )
+                    )
 
         return matches
+
+    def _parse_address(self, text: str) -> Optional[Tuple[str, str, str]]:
+        """Parse address into components."""
+        parts = text.strip().lower().split()
+        if len(parts) < 2:
+            return None
+
+        # Find number component
+        number = next((p for p in parts if p.isdigit()), None)
+        if not number:
+            return None
+
+        # Get remaining parts
+        remaining = parts[:parts.index(number)] + parts[parts.index(number)+1:]
+
+        # Find street type
+        street_types = {
+            'st', 'street', 'ave', 'avenue', 'rd', 'road',
+            'ln', 'lane', 'dr', 'drive', 'blvd', 'boulevard'
+        }
+        street_type = next((p for p in remaining if p.lower() in street_types), None)
+        if not street_type:
+            return None
+
+        # Get street name
+        street_name = ' '.join(p for p in remaining if p != street_type)
+        if not street_name:
+            return None
+
+        return number, street_name, street_type
 
     def _normalize_street_type(self, street_type: str) -> str:
         """Normalize street type to canonical form."""
@@ -545,11 +603,24 @@ class PatternMatcher:
         # Special handling for addresses
         def split_address(addr: str) -> tuple:
             parts = addr.lower().split()
-            if len(parts) >= 3:
-                number = parts[0]
-                street_type = parts[-1]
-                street_name = ' '.join(parts[1:-1])
-                return number, street_name, street_type
+            if len(parts) >= 2:  # Allow for more flexible address formats
+                # Try to find the number component
+                number = next((p for p in parts if p.isdigit()), None)
+                if number:
+                    number_idx = parts.index(number)
+                    # Get remaining parts
+                    remaining = parts[:number_idx] + parts[number_idx + 1:]
+                    # Try to identify street type
+                    street_type = next((p for p in remaining if p.lower() in {
+                        'st', 'street', 'ave', 'avenue', 'rd', 'road', 'ln', 'lane',
+                        'dr', 'drive', 'blvd', 'boulevard'
+                    }), None)
+                    if street_type:
+                        type_idx = remaining.index(street_type)
+                        street_name = ' '.join(remaining[:type_idx] + remaining[type_idx + 1:])
+                    else:
+                        street_name = ' '.join(remaining)
+                    return number, street_name, street_type
             return None
 
         # If both look like addresses, do component-wise comparison
@@ -577,10 +648,19 @@ class PatternMatcher:
                 'dr': 'drive', 'drive': 'drive',
                 'blvd': 'boulevard', 'boulevard': 'boulevard'
             }
-            type_sim = 1.0 if type_map.get(type1, type1) == type_map.get(type2, type2) else 0.0
 
-            # Weight the components
-            return (number_sim * 0.4 + name_sim * 0.4 + type_sim * 0.2)
+            # More strict type matching
+            type_sim = 1.0 if (type1 and type2 and type_map.get(type1.lower(), type1.lower()) == type_map.get(type2.lower(), type2.lower())) else 0.0
+
+            # More strict weighting
+            final_sim = (
+                (number_sim * 0.5) +  # Increased weight for number match
+                (name_sim * 0.3) +    # Reduced weight for name similarity
+                (type_sim * 0.2)      # Maintained weight for type match
+            )
+
+            # Apply threshold for stricter matching
+            return final_sim if final_sim >= 0.6 else 0.0
 
         # Fall back to regular n-gram similarity for non-address strings
         ngrams1 = set(self._get_ngrams(text1.lower(), ngram_size))
@@ -590,7 +670,10 @@ class PatternMatcher:
             return 0.0
 
         intersection = ngrams1.intersection(ngrams2)
-        return len(intersection) / max(len(ngrams1), len(ngrams2))
+        similarity = len(intersection) / max(len(ngrams1), len(ngrams2))
+
+        # Apply threshold for non-address strings too
+        return similarity if similarity >= 0.7 else 0.0
 
     def _get_ngrams(self, text: str, n: int) -> list:
         """Get n-grams from text."""
@@ -690,7 +773,9 @@ class PatternMatcher:
         self,
         seq_ratio: float,
         lev_ratio: float,
-        ngram_ratio: float
+        ngram_ratio: float,
+        text: str = None,
+        example: str = None
     ) -> float:
         """Calculate confidence for general text matching."""
         weights = {
@@ -706,13 +791,26 @@ class PatternMatcher:
             ngram_ratio * weights["ngram"]
         )
 
+        # Check for prefix matches if text and example are provided
+        if text and example:
+            text = text.lower()
+            example = example.lower()
+
+            # Boost score for prefix matches
+            if text.startswith(example) or example.startswith(text):
+                score = min(1.0, score * 1.3)  # 30% boost for prefix matches
+
+            # Additional boost for near-exact prefix
+            if len(text) >= len(example) and text[:len(example)] == example:
+                score = min(1.0, score * 1.2)  # Additional 20% boost
+
         # Boost score for very close matches
-        if seq_ratio > 0.9 and lev_ratio > 0.9:
+        if seq_ratio > 0.8 or lev_ratio > 0.8:
             score = min(1.0, score * 1.2)
 
-        # Penalize very different matches
-        if max(seq_ratio, lev_ratio, ngram_ratio) < 0.3:
-            score *= 0.5
+        # Less severe penalty for partial matches
+        if max(seq_ratio, lev_ratio, ngram_ratio) < 0.4:
+            score *= 0.7
 
         return score
 

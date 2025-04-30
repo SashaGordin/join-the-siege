@@ -8,6 +8,8 @@ from src.classifier.pattern_learning.pattern_matcher import PatternMatcher
 from src.classifier.pattern_learning.pattern_store import PatternStore
 from src.classifier.pattern_learning.db_service import PatternDBService
 import os
+from src.classifier.pattern_learning.cached_pattern_matcher import CachedPatternMatcher
+from src.classifier.services.cache_service import CacheService
 
 @pytest.fixture(autouse=True)
 def mock_openai():
@@ -210,3 +212,29 @@ def pattern_store():
     Session = scoped_session(session_factory)
     db_service = PatternDBService(Session())
     return PatternStore(db_service)
+
+@pytest.fixture
+def mock_redis():
+    """Create a mock Redis client."""
+    mock_redis = MagicMock()
+    mock_redis.get.return_value = None  # Default to cache miss
+    mock_redis.setex.return_value = True  # Default to successful set
+    mock_redis.flushdb.return_value = True  # Default to successful flush
+    mock_redis.delete.return_value = True  # Default to successful delete
+    mock_redis.keys.return_value = []  # Default to no keys
+    mock_redis.ping.return_value = True  # Default to successful ping
+    return mock_redis
+
+@pytest.fixture
+def mock_cache_service(mock_redis):
+    """Create a mock cache service."""
+    cache_service = CacheService()
+    cache_service.redis_client = mock_redis
+    return cache_service
+
+@pytest.fixture
+def cached_pattern_matcher(mock_cache_service):
+    """Get a cached pattern matcher with mocked cache service."""
+    matcher = CachedPatternMatcher()
+    matcher.cache_service = mock_cache_service
+    return matcher
