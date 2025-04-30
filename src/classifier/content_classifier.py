@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Any, Union, List
+from typing import Dict, Any, Union, List, Optional
 import pypdf
 from PIL import Image
 import magic
@@ -16,6 +16,13 @@ from .exceptions import (
     ClassificationError,
     TextExtractionError,
     FeatureExtractionError
+)
+from .industry_config import (
+    INDUSTRY_CONFIGS,
+    IndustryConfig,
+    DocumentTypeConfig,
+    FeatureDefinition,
+    FeatureImportance
 )
 import re
 
@@ -37,9 +44,16 @@ class ContentClassifier:
     A content-based document classifier that uses LLM to determine document type.
     """
 
-    def __init__(self):
-        """Initialize the content classifier."""
+    def __init__(self, default_industry: str = None):
+        """
+        Initialize the content classifier.
+
+        Args:
+            default_industry: Default industry to use for classification
+        """
         self.mime_magic = magic.Magic(mime=True)
+        self.default_industry = default_industry
+
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable is not set")
@@ -59,6 +73,27 @@ class ContentClassifier:
             pytesseract.get_tesseract_version()
         except pytesseract.TesseractNotFoundError:
             raise RuntimeError("Tesseract is not installed. Please install tesseract-ocr package.")
+
+    def _get_industry_prompt(self, industry: str) -> str:
+        """Get industry-specific prompt additions."""
+        if industry == "healthcare":
+            return """Industry Context: healthcare
+Focus on medical document features and classify as medical documents when appropriate:
+- Patient information (required for medical documents)
+- CPT and ICD codes (required for medical claims)
+- Provider details
+- Service dates
+- Medical charges"""
+        elif industry == "financial":
+            return """Industry Context: financial
+Focus on financial document features and classify as financial documents when appropriate:
+- Invoice numbers (required for invoices)
+- Payment terms
+- Due dates
+- Line items
+- Total amounts
+Do not classify as medical documents unless absolutely certain."""
+        return ""
 
     def _extract_text_from_image(self, image_path: Path) -> str:
         """
@@ -247,386 +282,506 @@ class ContentClassifier:
             raise TextExtractionError(f"Failed to extract PDF text: {str(e)}")
 
     def _normalize_doc_type(self, doc_type: str, keep_spaces: bool = False) -> str:
-        """
-        Normalize document type to consistent format.
+        """Normalize document type string for comparison."""
+        if not doc_type:
+            return ""
 
-        Args:
-            doc_type: Document type to normalize
-            keep_spaces: If True, keep spaces instead of converting to underscores
-        """
-        # Convert to lowercase and strip any punctuation
-        doc_type = doc_type.lower().strip('."')
-        # Replace multiple spaces with single space
-        doc_type = ' '.join(doc_type.split())
-        # Replace spaces with underscores unless keep_spaces is True
-        return doc_type if keep_spaces else '_'.join(doc_type.split())
+        # Convert to lowercase and remove special characters
+        normalized = doc_type.lower()
+        normalized = re.sub(r'[^\w\s-]', '', normalized)
 
-    def _classify_with_llm(self, text: str) -> ClassificationResult:
-        """
-        Use LLM to classify the document and extract features.
+        # Handle common variations
+        replacements = {
+            'medical claim': 'medical_claim',
+            'medicalclaim': 'medical_claim',
+            'med claim': 'medical_claim',
+            'medical invoice': 'medical_claim',
+            'healthcare claim': 'medical_claim',
+            'prescription': 'medical_prescription',
+            'medical prescription': 'medical_prescription',
+            'med prescription': 'medical_prescription',
+            'rx': 'medical_prescription',
+            'invoice': 'invoice',
+            'bill': 'invoice',
+            'billing': 'invoice',
+            'statement': 'invoice',
+            'financial statement': 'invoice'
+        }
 
-        Args:
-            text: Document text content
+        # Try exact matches first
+        if normalized in replacements:
+            return replacements[normalized]
 
-        Returns:
-            ClassificationResult with document type, confidence, and features
-        """
-        # Truncate text to avoid token limits while preserving important parts
-        truncated_text = text[:1500]
+        # Try partial matches
+        for key, value in replacements.items():
+            if key in normalized:
+                return value
 
-        # Create a natural language prompt for the LLM
-        prompt = f"""Analyze this document text and classify it. Format your response EXACTLY as shown, with no extra text:
+        # Remove spaces unless keep_spaces is True
+        if not keep_spaces:
+            normalized = normalized.replace(' ', '_')
 
-Document Type: [type]
-Confidence: [0-1]
+        return normalized
 
-Features:
-1. Dates:
-[list all dates found, one per line]
-
-2. Amounts:
-[list all monetary amounts found, one per line, including currency symbols]
-Example:
-$1,000.00
-€500.00
-£250.00
-¥50000
-
-3. Document Numbers:
-[list all reference numbers, invoice numbers, IDs, etc., one per line with type prefix]
-Example:
-Invoice Number: INV-2024-001
-Account ID: ACC-123
-Policy Number: POL-456
-CPT Code: 99213 (Office Visit)
-
-4. Key Phrases:
-[list distinctive phrases that identify document type, one per line]
-
-5. Document Fields:
-[list fields specific to this document type, one per line with type prefix]
-Example:
-Bill To: John Doe
-Provider: Dr. Smith
-Account Holder: Jane Smith
-Service: Office Visit (CPT: 99213)
-
-Document text to analyze:
-{truncated_text}
-
-Remember:
-- Document Type must be ONLY the type (e.g. "invoice" or "bank statement"), no extra words
-- Confidence must be ONLY a number between 0 and 1
-- For clear documents with all expected fields, use confidence > 0.9
-- For partial documents missing some fields, use confidence 0.6-0.8
-- For ambiguous documents, use confidence < 0.5
-- Each feature must be on its own line
-- For medical documents, always extract CPT codes and descriptions
-- For any codes (CPT, ICD, etc.), include them in both Document Numbers and Document Fields sections
-- For large documents with many line items, list ALL amounts and line items
-- For medical documents, list ALL CPT codes found
-"""
-
+    def _classify_with_llm(self, text: str, industry: Optional[str] = None) -> ClassificationResult:
+        """Classify document using LLM."""
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a document classification expert. Format your responses EXACTLY as specified, with no extra text or explanations. Pay special attention to document-specific codes and identifiers. For medical documents, always identify CPT codes."
-                    },
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1  # Low temperature for more consistent results
-            )
+            # Get industry-specific prompt additions
+            industry_prompt = self._get_industry_prompt(industry) if industry else ""
+            logger.debug(f"Using industry context: {industry}")
+            logger.debug(f"Industry prompt: {industry_prompt}")
 
-            # Parse the response
-            answer = response.choices[0].message.content.strip()
+            # Enhanced prompt for better feature extraction
+            prompt = f"""Analyze this document and classify it. Extract all relevant features.
+Pay special attention to:
+1. Document type
+2. Dates (any format)
+3. Amounts and monetary values
+4. Document numbers (invoice numbers, patient IDs, etc.)
+5. Payment terms (look for terms like 'Net 30', 'Due in X days', 'Payment due', etc.)
 
-            # Split into sections more reliably
-            sections = {}
-            current_section = None
-            current_lines = []
+For financial documents:
+- Look for payment terms in different formats (Net X, Due in X days, etc.)
+- Extract all monetary amounts
+- Note any late payment penalties or discounts
 
-            for line in answer.split('\n'):
-                line = line.strip()
-                if not line:
-                    continue
+For healthcare documents:
+- Extract all CPT codes (5-digit codes)
+- Look for ICD-10 diagnosis codes
+- Identify patient IDs and provider NPIs
+- Note service dates and amounts
 
-                if line.startswith('Document Type:'):
-                    current_section = 'type'
-                    doc_type = line.split(':', 1)[1].strip()
-                    sections[current_section] = self._normalize_doc_type(doc_type)
-                elif line.startswith('Confidence:'):
-                    current_section = 'confidence'
-                    conf_str = line.split(':', 1)[1].strip()
-                    try:
-                        sections[current_section] = float(conf_str)
-                    except ValueError:
-                        sections[current_section] = 0.5
-                elif line == 'Features:':
-                    current_section = None
-                elif line.startswith('1. Dates:'):
-                    current_section = 'dates'
-                    current_lines = []
-                elif line.startswith('2. Amounts:'):
-                    if current_section:
-                        sections[current_section] = current_lines
-                    current_section = 'amounts'
-                    current_lines = []
-                elif line.startswith('3. Document Numbers:'):
-                    if current_section:
-                        sections[current_section] = current_lines
-                    current_section = 'numbers'
-                    current_lines = []
-                elif line.startswith('4. Key Phrases:'):
-                    if current_section:
-                        sections[current_section] = current_lines
-                    current_section = 'phrases'
-                    current_lines = []
-                elif line.startswith('5. Document Fields:'):
-                    if current_section:
-                        sections[current_section] = current_lines
-                    current_section = 'fields'
-                    current_lines = []
-                elif current_section and line:
-                    current_lines.append(line)
+{industry_prompt}
 
-            if current_section:
-                sections[current_section] = current_lines
+Document text:
+{text}
 
-            # Initialize result values
-            doc_type = sections.get('type', 'unknown')
-            confidence = sections.get('confidence', 0.0)
-            features = []
+Provide a structured response with:
+1. Document type
+2. Confidence score (0.0-1.0)
+3. All extracted features with their values
 
-            # Add document type as a feature
-            features.append({
-                "type": "document_type",
-                "present": True,
-                "value": doc_type,
-                "values": [doc_type]
-            })
+Format features as "Feature Type: Value" for easy parsing."""
 
-            # Process dates
-            if 'dates' in sections:
-                features.append({
-                    "type": "date",
-                    "present": bool(sections['dates']),
-                    "values": sections['dates']
-                })
+            try:
+                logger.debug("Calling OpenAI API...")
+                # Call OpenAI API
+                response = self.client.chat.completions.create(
+                    model="gpt-4",  # Using GPT-4 for better accuracy
+                    messages=[
+                        {"role": "system", "content": "You are a document classification assistant."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.1,  # Low temperature for consistent results
+                    max_tokens=1000
+                )
 
-            # Process amounts
-            if 'amounts' in sections:
-                # Extract all amounts from the text using regex to catch any we missed
-                amount_pattern = r'(?:[\$\€\£\¥])\s*\d+(?:,\d{3})*(?:\.\d{2})?|\d+(?:,\d{3})*(?:\.\d{2})?\s*(?:USD|EUR|GBP|JPY)'
-                additional_amounts = re.findall(amount_pattern, text)
-                all_amounts = list(set(sections['amounts'] + additional_amounts))
-                features.append({
-                    "type": "amount",
-                    "present": bool(all_amounts),
-                    "values": all_amounts
-                })
+                # Validate API response
+                if not response.choices:
+                    logger.error("Invalid API response: No choices returned")
+                    raise ClassificationError("Invalid API response: No choices returned")
 
-            # Process document numbers with enhanced CPT detection
-            if 'numbers' in sections:
-                cpt_codes = []
-                identifiers = []
-                for line in sections.get('numbers', []):
-                    line_lower = line.lower()
-                    # Look for CPT codes in various formats
-                    cpt_match = re.search(r'(?:cpt:?\s*|procedure:?\s*)(\d{5})', line_lower)
-                    if cpt_match:
-                        cpt_code = cpt_match.group(1)
-                        cpt_codes.append(f"CPT Code: {cpt_code}")
-                    elif 'invoice number' in line_lower:
-                        features.append({
-                            "type": "invoice_number",
-                            "present": True,
-                            "values": [line]
-                        })
-                    elif 'account' in line_lower:
-                        features.append({
-                            "type": "account_number",
-                            "present": True,
-                            "values": [line]
-                        })
-                    else:
-                        identifiers.append(line)
+                logger.debug(f"API Response received: {response.choices[0].message.content[:200]}...")
+            except Exception as api_error:
+                logger.error(f"API call failed: {str(api_error)}")
+                if "choices" in str(api_error):
+                    raise ClassificationError("Invalid API response: Malformed response structure")
+                raise ClassificationError(f"Classification failed: {str(api_error)}")
 
-                # Add CPT codes as a separate feature
-                if cpt_codes:
-                    features.append({
-                        "type": "cpt_code",
-                        "present": True,
-                        "values": cpt_codes
-                    })
+            # Parse response
+            doc_type, confidence, features = self._parse_llm_response(response.choices[0].message.content)
 
-                # Add remaining identifiers
-                if identifiers:
-                    features.append({
-                        "type": "identifier",
-                        "present": True,
-                        "values": identifiers
-                    })
+            # Validate against industry config if available
+            if industry and doc_type != "unknown":
+                config = INDUSTRY_CONFIGS.get(industry)
+                if config:
+                    for doc_config in config.document_types:
+                        if self._normalize_doc_type(doc_config.name) == self._normalize_doc_type(doc_type):
+                            validation_results = doc_config.validate_features(features)
 
-            # Process key phrases
-            if 'phrases' in sections:
-                features.append({
-                    "type": "key_phrase",
-                    "present": bool(sections['phrases']),
-                    "values": sections['phrases']
-                })
+                            # Calculate confidence based on feature presence and validation
+                            feature_confidence = validation_results["confidence_score"]
 
-            # Process document fields with enhanced CPT detection
-            if 'fields' in sections:
-                field_values = []
-                cpt_descriptions = []
-                for line in sections.get('fields', []):
-                    line_lower = line.lower()
-                    # Look for CPT codes in field descriptions
-                    cpt_match = re.search(r'(?:cpt:?\s*|procedure:?\s*)(\d{5})', line_lower)
-                    if cpt_match:
-                        cpt_code = cpt_match.group(1)
-                        description = line.split('(')[0].strip() if '(' in line else line
-                        cpt_descriptions.append(f"{description} (CPT: {cpt_code})")
-                    else:
-                        field_values.append(line)
+                            # Boost confidence if all required features are present
+                            if not validation_results["missing_required"]:
+                                feature_confidence = min(1.0, feature_confidence + 0.2)
 
-                if field_values:
-                    features.append({
-                        "type": "document_field",
-                        "present": True,
-                        "values": field_values
-                    })
-                if cpt_descriptions:
-                    features.append({
-                        "type": "cpt_description",
-                        "present": True,
-                        "values": cpt_descriptions
-                    })
+                            # Boost confidence if document type matches industry
+                            if industry == "healthcare" and "medical" in doc_type:
+                                feature_confidence = min(1.0, feature_confidence + 0.1)
+                            elif industry == "financial" and doc_type == "invoice":
+                                feature_confidence = min(1.0, feature_confidence + 0.1)
 
-            # Ensure all core feature types are present
-            core_types = {
-                "date", "amount", "identifier", "key_phrase", "document_field",
-                "invoice_number", "account_number", "cpt_code", "cpt_description"
-            }
-            existing_types = {f["type"] for f in features}
-            for ftype in core_types - existing_types:
-                features.append({
-                    "type": ftype,
-                    "present": False,
-                    "values": []
-                })
+                            # Use the higher confidence between LLM and feature validation
+                            confidence = max(confidence, feature_confidence)
 
-            # Enhanced confidence scoring
-            feature_weights = {
-                "date": 0.15,
-                "amount": 0.15,
-                "identifier": 0.1,
-                "key_phrase": 0.2,  # Increased weight for key phrases
-                "document_field": 0.2,  # Increased weight for document fields
-                "invoice_number": 0.1,
-                "account_number": 0.1,
-                "cpt_code": 0.1
-            }
+                            # Add validation warnings
+                            if validation_results["missing_required"]:
+                                features.append({
+                                    "type": "validation_warning",
+                                    "values": [f"Missing required fields: {', '.join(validation_results['missing_required'])}"],
+                                    "present": True
+                                })
 
-            # Calculate weighted confidence and count features
-            weighted_confidence = 0.0
-            matching_features = 0
-            key_features = 0  # Count of important features
-            medical_features = 0  # Count medical-specific features
-            for feature in features:
-                if feature["present"]:
-                    weight = feature_weights.get(feature["type"], 0.0)
-                    weighted_confidence += weight
-                    matching_features += 1
-
-                    # Count key features that strongly indicate document type
-                    if feature["type"] in ["invoice_number", "account_number", "key_phrase"]:
-                        key_features += 1
-
-                    # Count medical-specific features
-                    if any(term in str(feature).lower() for term in ["cpt", "medical", "patient", "provider", "insurance"]):
-                        medical_features += 1
-
-            # Adjust final confidence
-            if doc_type == "unknown":
-                confidence = min(confidence, 0.4)  # Cap confidence for unknown types
-            elif not any(f["present"] for f in features):
-                confidence = min(confidence, 0.3)  # Very low confidence if no features found
-            else:
-                # Base confidence from weighted features
-                base_confidence = min(0.95, weighted_confidence)
-
-                # Adjust confidence based on document completeness
-                if key_features >= 2 and matching_features >= 4:
-                    # Clear document with key identifying features
-                    base_confidence = min(0.95, base_confidence + 0.15)
-                elif key_features == 1 and matching_features >= 2:
-                    # Partial document with some identifying features
-                    base_confidence = min(0.75, base_confidence + 0.05)
-                else:
-                    # Ambiguous document with few features
-                    base_confidence = min(0.45, base_confidence)  # Lower confidence for ambiguous docs
-
-                # Special handling for medical documents
-                if "medical" in doc_type.lower() and medical_features >= 3:
-                    base_confidence = min(0.95, base_confidence + 0.2)  # Significant boost for medical documents with multiple medical features
-
-                # Blend with LLM confidence but give more weight to feature-based confidence
-                confidence = (base_confidence * 0.8 + confidence * 0.2)
-
-                # Final adjustments
-                if len(text.strip()) < 50:  # Very short documents are less confident
-                    confidence = min(confidence, 0.6)
-                elif "unknown" in text.lower() or "error" in text.lower():
-                    confidence = min(confidence, 0.4)
-
-                # Ensure ambiguous documents have lower confidence
-                if matching_features < 2 or (key_features == 0 and not medical_features):
-                    confidence = min(confidence, 0.35)  # Lowered cap for ambiguous docs
-                elif key_features == 0 and len(text.strip()) < 100:
-                    confidence = min(confidence, 0.45)  # Cap confidence for short docs without key features
-
-                # Additional confidence adjustments for ambiguous vs partial docs
-                if "payment" in text.lower() and "receipt" in text.lower():
-                    # Generic payment text should have lower confidence
-                    confidence = min(confidence, 0.3)  # Lowered further for payment receipts
-                elif len(text.strip()) < 50 or matching_features <= 2:
-                    if any(f["type"] == "invoice_number" for f in features if f["present"]):
-                        # Partial invoice with invoice number should have higher confidence
-                        confidence = min(confidence, 0.65)
-                    else:
-                        # Very short or feature-poor documents should have lower confidence
-                        confidence = min(confidence, 0.45)
-
-            # Get the normalized document type based on test requirements
-            doc_type_with_spaces = self._normalize_doc_type(doc_type, keep_spaces=True)
-            doc_type_with_underscores = self._normalize_doc_type(doc_type, keep_spaces=False)
-
-            # Use spaces for specific document types that require it
-            flexible_types = {
-                "purchase order": "purchase order",
-                "tax return": "tax return",
-                "medical prescription": "prescription",
-                "medical_prescription": "prescription",  # Added underscore version
-                "bank statement": "bank statement"
-            }
-
-            # Check if we have a match in our flexible types
-            final_doc_type = flexible_types.get(doc_type_with_spaces, None)
-            if final_doc_type is None:
-                final_doc_type = flexible_types.get(doc_type_with_underscores, doc_type_with_underscores)
+                            if validation_results["invalid_format"]:
+                                features.append({
+                                    "type": "validation_warning",
+                                    "values": [f"Invalid format for fields: {', '.join(validation_results['invalid_format'])}"],
+                                    "present": True
+                                })
+                            break
 
             return ClassificationResult(
-                doc_type=final_doc_type,
+                doc_type=doc_type,
                 confidence=confidence,
                 features=features
             )
 
         except Exception as e:
-            raise ClassificationError(f"LLM classification failed: {str(e)}")
+            logger.error(f"Classification failed: {str(e)}")
+            if isinstance(e, ClassificationError):
+                raise
+            raise ClassificationError(f"Classification failed: {str(e)}")
+
+    def _parse_llm_response(self, response: str) -> tuple:
+        """Parse LLM response into structured format."""
+        try:
+            logger.debug(f"Starting to parse LLM response: {response[:200]}...")  # Log first 200 chars of response
+            lines = response.split('\n')
+
+            doc_type = None
+            confidence = None
+            features = []
+            ambiguity_detected = False
+
+            current_section = None
+            current_features = []
+
+            # Track feature counts for ambiguity detection
+            feature_counts = {
+                "healthcare": 0,
+                "financial": 0
+            }
+
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+
+                line_lower = line.lower()
+                logger.debug(f"Processing line: {line}")
+
+                # Extract document type
+                if line_lower.startswith('document type:'):
+                    doc_type = line.split(':', 1)[1].strip().lower()
+                    # Normalize document type
+                    doc_type = self._normalize_doc_type(doc_type)
+                    logger.debug(f"Found document type: {doc_type}")
+                    continue
+
+                # Extract confidence
+                if line_lower.startswith('confidence:'):
+                    try:
+                        confidence = float(line.split(':', 1)[1].strip())
+                        logger.debug(f"Found confidence: {confidence}")
+                    except ValueError:
+                        confidence = 0.5  # Default confidence for unparseable values
+                        logger.warning(f"Could not parse confidence value from: {line}, using default: {confidence}")
+                    continue
+
+                # Handle feature sections
+                if line.startswith('Features:'):
+                    current_section = 'features'
+                    logger.debug("Entering features section")
+                    continue
+
+                if current_section == 'features':
+                    # Check if this is a new feature section
+                    if line.startswith(('1.', '2.', '3.', '4.', '5.')):
+                        logger.debug(f"Found new feature section: {line}")
+                        # Add previous features if any
+                        if current_features:
+                            self._add_parsed_features(features, current_features)
+                        current_features = []
+                        continue
+
+                    # Parse feature line
+                    if ':' in line:
+                        feature_type, value = line.split(':', 1)
+                        feature_type = feature_type.strip('- ').lower()
+                        value = value.strip()
+                        logger.debug(f"Processing feature - type: {feature_type}, value: {value}")
+
+                        # Track industry-specific features for ambiguity detection
+                        healthcare_terms = ['patient', 'cpt', 'icd', 'diagnosis', 'provider', 'medical']
+                        financial_terms = ['invoice', 'payment', 'bill', 'account', 'net 30']
+
+                        # Check healthcare terms
+                        if any(term in feature_type or term in value.lower() for term in healthcare_terms):
+                            feature_counts['healthcare'] += 1
+                            logger.debug(f"Detected healthcare feature, count now: {feature_counts['healthcare']}")
+
+                        # Check financial terms
+                        if any(term in feature_type or term in value.lower() for term in financial_terms):
+                            feature_counts['financial'] += 1
+                            logger.debug(f"Detected financial feature, count now: {feature_counts['financial']}")
+
+                        # Handle validation warnings and missing fields
+                        if any(warning in feature_type.lower() for warning in ['warning', 'missing', 'validation']):
+                            logger.debug(f"Found validation warning: {value}")
+                            features.append({
+                                "type": "validation_warning",
+                                "values": [value],
+                                "present": True
+                            })
+                            continue
+
+                        # Enhanced healthcare feature detection
+                        if any(id_term in feature_type for id_term in ['patient id', 'patient', 'id']):
+                            logger.debug(f"Found patient ID: {value}")
+                            features.append({
+                                "type": "patient_id",
+                                "values": [value],
+                                "present": True
+                            })
+                            continue
+
+                        # CPT code detection
+                        cpt_terms = ['cpt', 'procedure', 'service code']
+                        if any(cpt_term in feature_type or cpt_term in value.lower() for cpt_term in cpt_terms):
+                            logger.debug(f"Processing CPT code: {value}")
+                            cpt_match = re.search(r'(\d{5})', value)
+                            if cpt_match:
+                                features.append({
+                                    "type": "cpt_code",
+                                    "values": [cpt_match.group(1)],
+                                    "present": True
+                                })
+                            continue
+
+                        # Enhanced invoice number detection
+                        if any(inv_term in feature_type.lower() for inv_term in ['invoice number', 'invoice #', 'invoice no', 'invoice id']):
+                            logger.debug(f"Processing invoice number: {value}")
+                            # Extract invoice number
+                            inv_match = re.search(r'([A-Z0-9][-A-Z0-9]*)', value)
+                            if inv_match:
+                                features.append({
+                                    "type": "invoice_number",
+                                    "values": [inv_match.group(1)],
+                                    "present": True
+                                })
+                            else:
+                                features.append({
+                                    "type": "invoice_number",
+                                    "values": [value.strip()],
+                                    "present": True
+                                })
+                            continue
+
+                        # ICD code detection
+                        icd_terms = ['icd', 'diagnosis']
+                        if any(icd_term in feature_type or icd_term in value.lower() for icd_term in icd_terms):
+                            logger.debug(f"Processing ICD code: {value}")
+                            icd_match = re.search(r'([A-Z]\d{2}(?:\.\d+)?)', value)
+                            if icd_match:
+                                features.append({
+                                    "type": "diagnosis_code",
+                                    "values": [icd_match.group(1)],
+                                    "present": True
+                                })
+                            continue
+
+                        # NPI detection
+                        if any(npi_term in feature_type for npi_term in ['npi', 'provider number']):
+                            logger.debug(f"Processing NPI: {value}")
+                            npi_match = re.search(r'(\d{10})', value)
+                            if npi_match:
+                                features.append({
+                                    "type": "provider_npi",
+                                    "values": [npi_match.group(1)],
+                                    "present": True
+                                })
+                            continue
+
+                        # Date detection
+                        date_terms = ['date', 'due', 'service', 'dos']
+                        if any(date_term in feature_type.lower() for date_term in date_terms):
+                            logger.debug(f"Processing date: {value}")
+                            date_match = re.search(r'(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})', value)
+                            if date_match:
+                                features.append({
+                                    "type": "date",
+                                    "values": [date_match.group(1)],
+                                    "present": True
+                                })
+                                continue
+                            alt_date_match = re.search(r'(\d{2,4}[-/]\d{1,2}[-/]\d{1,2})', value)
+                            if alt_date_match:
+                                features.append({
+                                    "type": "date",
+                                    "values": [alt_date_match.group(1)],
+                                    "present": True
+                                })
+                            continue
+
+                        # Amount detection
+                        amount_terms = ['amount', 'total', 'price', 'cost', '$']
+                        logger.debug(f"Checking for amount terms in feature type: {feature_type}")
+                        logger.debug(f"Checking for $ in value: {value}")
+                        if any(amount_term in feature_type.lower() for amount_term in amount_terms) or '$' in value:
+                            logger.debug(f"Processing amount: {value}")
+                            amount_match = re.search(r'\$?(\d+(?:,\d{3})*(?:\.\d{2})?)', value)
+                            if amount_match:
+                                logger.debug(f"Found amount match: {amount_match.group(0)}")
+                                features.append({
+                                    "type": "amount",
+                                    "values": [amount_match.group(0)],
+                                    "present": True
+                                })
+                                logger.debug(f"Added amount feature: {features[-1]}")
+                            else:
+                                logger.debug(f"No amount pattern found in value: {value}")
+                            continue
+
+                        # Payment terms detection
+                        payment_terms = ['payment', 'terms', 'due', 'net']
+                        logger.debug(f"Checking for payment terms in: {feature_type} - {value}")
+                        if any(term in feature_type.lower() or term in value.lower() for term in payment_terms):
+                            logger.debug(f"Processing payment terms: {value}")
+                            terms_match = re.search(r'(Net\s+\d+|Due\s+\d+(?:\s+days)?)', value, re.IGNORECASE)
+                            if terms_match:
+                                logger.debug(f"Found payment terms: {terms_match.group(1)}")
+                                features.append({
+                                    "type": "payment_terms",
+                                    "values": [terms_match.group(1)],
+                                    "present": True
+                                })
+                            else:
+                                logger.debug(f"No payment terms pattern found in value: {value}")
+                            continue
+
+                        # Add as generic feature if no specific type matched
+                        logger.debug(f"Adding generic feature - type: {feature_type}, value: {value}")
+                        current_features.append((feature_type, value))
+
+            # Add any remaining features
+            if current_features:
+                logger.debug(f"Adding remaining features: {current_features}")
+                self._add_parsed_features(features, current_features)
+
+            # Detect ambiguity
+            if feature_counts['healthcare'] > 0 and feature_counts['financial'] > 0:
+                logger.debug("Detected mixed industry signals")
+                ambiguity_detected = True
+                features.append({
+                    "type": "validation_warning",
+                    "values": ["Document contains mixed industry signals"],
+                    "present": True
+                })
+
+            # Handle incomplete responses and infer document type
+            if not doc_type or doc_type == "unknown":
+                logger.debug("Document type missing or unknown, attempting to infer from features")
+
+                # Check for strong healthcare indicators
+                healthcare_indicators = any(f["type"] == "patient_id" for f in features) or \
+                                     any(f["type"] == "cpt_code" for f in features) or \
+                                     any(f["type"] == "diagnosis_code" for f in features) or \
+                                     feature_counts['healthcare'] > feature_counts['financial'] or \
+                                     any('medical' in str(f).lower() for f in features) or \
+                                     'medical' in text.lower()
+                logger.debug(f"Healthcare indicators present: {healthcare_indicators}")
+                logger.debug(f"Healthcare feature count: {feature_counts['healthcare']}")
+                logger.debug(f"Financial feature count: {feature_counts['financial']}")
+
+                # Check for strong financial indicators
+                financial_indicators = any(f["type"] == "payment_terms" for f in features) or \
+                                    any(f["type"] == "invoice_number" for f in features) or \
+                                    feature_counts['financial'] > feature_counts['healthcare'] or \
+                                    any('invoice' in str(f).lower() for f in features) or \
+                                    'invoice' in text.lower()
+                logger.debug(f"Financial indicators present: {financial_indicators}")
+
+                if healthcare_indicators and not financial_indicators:
+                    doc_type = "medical_claim"
+                    confidence = confidence or 0.6  # Lower confidence for inferred type
+                    logger.debug("Inferred document type: medical_claim")
+                elif financial_indicators and not healthcare_indicators:
+                    doc_type = "invoice"
+                    confidence = confidence or 0.6  # Lower confidence for inferred type
+                    logger.debug("Inferred document type: invoice")
+                elif healthcare_indicators and financial_indicators:
+                    # Use industry context to break the tie
+                    if industry == "healthcare":
+                        doc_type = "medical_claim"
+                        confidence = 0.6
+                        logger.debug("Using healthcare industry context to resolve ambiguity")
+                    elif industry == "financial":
+                        doc_type = "invoice"
+                        confidence = 0.6
+                        logger.debug("Using financial industry context to resolve ambiguity")
+                    else:
+                        # Default to the type with more indicators
+                        doc_type = "medical_claim" if feature_counts['healthcare'] >= feature_counts['financial'] else "invoice"
+                        confidence = 0.5  # Low confidence due to ambiguity
+                        logger.debug(f"Defaulting to {doc_type} based on feature counts")
+                elif industry:  # If we have an industry context but no clear indicators
+                    doc_type = "medical_claim" if industry == "healthcare" else "invoice"
+                    confidence = 0.5  # Low confidence due to lack of indicators
+                    logger.debug(f"Using industry context {industry} to set default type: {doc_type}")
+                else:
+                    doc_type = "unknown"
+                    confidence = 0.5
+                    logger.debug("No clear indicators or industry context, setting type to unknown")
+
+            # Set defaults for incomplete responses
+            if not doc_type:
+                doc_type = "unknown"
+                logger.debug("No document type could be inferred, setting to unknown")
+            if confidence is None:
+                confidence = 0.5
+                logger.debug("No confidence score found, using default: 0.5")
+
+            # Add validation warnings for missing required features
+            if doc_type == "medical_claim":
+                required_features = {"patient_id", "cpt_code", "date", "amount"}
+                found_features = {f["type"] for f in features}
+                missing = required_features - found_features
+                if missing:
+                    features.append({
+                        "type": "validation_warning",
+                        "values": [f"Missing required fields: {', '.join(missing)}"],
+                        "present": True
+                    })
+                    # Reduce confidence for missing required fields
+                    confidence *= 0.8
+            elif doc_type == "invoice":
+                required_features = {"invoice_number", "date", "amount"}
+                found_features = {f["type"] for f in features}
+                missing = required_features - found_features
+                if missing:
+                    features.append({
+                        "type": "validation_warning",
+                        "values": [f"Missing required fields: {', '.join(missing)}"],
+                        "present": True
+                    })
+                    # Reduce confidence for missing required fields
+                    confidence *= 0.8
+
+            return doc_type, confidence, features
+
+        except Exception as e:
+            logger.error(f"Failed to parse LLM response: {str(e)}")
+            raise ClassificationError(f"Invalid API response: {str(e)}")
+
+    def _add_parsed_features(self, features: list, current_features: list):
+        """Helper method to add parsed features to the feature list."""
+        for feature_type, value in current_features:
+            features.append({
+                "type": feature_type,
+                "values": [value],
+                "present": True
+            })
 
     def _extract_feature_items(self, feature_line: str) -> List[str]:
         """Extract individual features from a feature line."""
@@ -634,33 +789,30 @@ Remember:
         items = feature_line.split(':')[1].split(',') if ':' in feature_line else []
         return [item.strip() for item in items if item.strip()]
 
-    def classify_file(self, file_path: Union[str, Path]) -> Dict[str, Any]:
+    def classify_file(self, file_path: Union[str, Path], industry: Optional[str] = None) -> Dict[str, Any]:
         """
-        Classify a file based on its content using LLM.
+        Classify a document file and extract its features.
 
         Args:
-            file_path: Path to the file
+            file_path: Path to the document file
+            industry: Optional industry context for classification
 
         Returns:
-            dict: Classification result with class, confidence, and features
-
-        Raises:
-            ClassificationError: If classification fails
+            Dictionary containing classification results
         """
-        file_path = Path(file_path)
-
-        # Check if file exists and is not empty
-        if not file_path.exists():
-            raise ClassificationError("File does not exist")
-        if file_path.stat().st_size == 0:
-            raise ClassificationError("Empty file")
-
         try:
+            # Validate industry if specified
+            if industry and industry not in INDUSTRY_CONFIGS:
+                raise ValueError(f"Invalid industry: {industry}")
+
+            # Use default industry if none specified
+            target_industry = industry or self.default_industry
+
             # Extract text content
             text = self.extract_text(file_path)
 
-            # Classify using LLM
-            result = self._classify_with_llm(text)
+            # Classify using LLM with industry context
+            result = self._classify_with_llm(text, target_industry)
 
             return {
                 "class": result.doc_type,
@@ -670,5 +822,7 @@ Remember:
 
         except TextExtractionError as e:
             raise ClassificationError(f"Text extraction failed: {str(e)}")
+        except ValueError as e:
+            raise e  # Re-raise ValueError for invalid industry
         except Exception as e:
             raise ClassificationError(f"Classification failed: {str(e)}")

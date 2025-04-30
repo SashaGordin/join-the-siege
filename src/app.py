@@ -16,6 +16,7 @@ from src.classifier.exceptions import (
     TextExtractionError,
     ClassificationError
 )
+from src.classifier.industry_config import INDUSTRY_CONFIGS
 
 app = Flask(__name__)
 
@@ -53,6 +54,7 @@ def classify_file_route():
     """
     Endpoint to classify a file based on its content.
     Expects a file in the request.files with key 'file'.
+    Optionally accepts an 'industry' parameter to specify the industry context.
     """
     if 'file' not in request.files:
         return jsonify({"error": "No file part in the request"}), 400
@@ -60,6 +62,11 @@ def classify_file_route():
     file = request.files['file']
     if file.filename == '':
         return jsonify({"error": "No selected file"}), 400
+
+    # Get industry parameter if provided
+    industry = request.form.get('industry')
+    if industry and industry not in INDUSTRY_CONFIGS:
+        return jsonify({"error": f"Invalid industry: {industry}. Valid options are: {', '.join(INDUSTRY_CONFIGS.keys())}"}), 400
 
     temp_path = None
     try:
@@ -87,7 +94,7 @@ def classify_file_route():
 
         # Classify the file
         try:
-            classification_result = content_classifier.classify_file(temp_path)
+            classification_result = content_classifier.classify_file(temp_path, industry=industry)
 
             # Generate preview if possible
             try:
@@ -95,7 +102,8 @@ def classify_file_route():
             except Exception:
                 preview_data = {"preview_available": False}
 
-            return jsonify({
+            # Add industry-specific information if applicable
+            response_data = {
                 "classification": {
                     "document_type": classification_result["class"],
                     "confidence": classification_result["confidence"],
@@ -106,7 +114,21 @@ def classify_file_route():
                     "filename": file.filename
                 },
                 "preview": preview_data
-            }), 200
+            }
+
+            if industry:
+                # Add industry-specific validation info
+                validation_warnings = [
+                    f for f in classification_result["features"]
+                    if f["type"] == "validation_warning"
+                ]
+                if validation_warnings:
+                    response_data["validation"] = {
+                        "warnings": [w["values"] for w in validation_warnings],
+                        "industry": industry
+                    }
+
+            return jsonify(response_data), 200
 
         except TextExtractionError as e:
             return jsonify({"error": f"Text extraction failed: {str(e)}"}), 422
@@ -126,6 +148,28 @@ def classify_file_route():
                 os.rmdir(temp_path.parent)
             except Exception:
                 pass  # Best effort cleanup
+
+@app.route('/industries', methods=['GET'])
+def list_industries():
+    """List available industry configurations."""
+    industries = {}
+    for industry_id, config in INDUSTRY_CONFIGS.items():
+        industries[industry_id] = {
+            "name": config.name,
+            "description": config.description,
+            "document_types": [
+                {
+                    "name": dt.name,
+                    "description": dt.description,
+                    "required_features": [
+                        f.name for f in dt.features
+                        if f.importance.value == "required"
+                    ]
+                }
+                for dt in config.document_types
+            ]
+        }
+    return jsonify(industries), 200
 
 @app.route('/preview_file', methods=['POST'])
 def preview_file_route():
