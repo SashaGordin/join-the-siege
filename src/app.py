@@ -104,9 +104,39 @@ def classify_file_route():
         if mime_type.startswith('image/'):
             return jsonify({"error": "OCR not implemented yet"}), 501
 
-        # Classify the file
+        # Check cache first
+        file_content = Path(temp_path).read_text()
+        cached_result = cache_service.get_classification(file_content)
+
+        if cached_result:
+            app.logger.info("Cache hit for classification")
+            # Generate preview if possible
+            try:
+                preview_data = file_validator.get_file_preview(temp_path)
+            except Exception:
+                preview_data = {"preview_available": False}
+
+            response_data = {
+                "classification": {
+                    "document_type": cached_result["class"],
+                    "confidence": cached_result["confidence"],
+                    "features": cached_result["features"],
+                    "pattern_features": cached_result.get("pattern_features", [])
+                },
+                "file_info": {
+                    "mime_type": mime_type,
+                    "filename": file.filename
+                },
+                "preview": preview_data
+            }
+            return jsonify(response_data), 200
+
+        # Classify the file if not in cache
         try:
             classification_result = content_classifier.classify_file(temp_path, industry=industry)
+
+            # Cache the result
+            cache_service.set_classification(file_content, classification_result)
 
             # Generate preview if possible
             try:
@@ -336,6 +366,28 @@ def get_status(task_id):
     except Exception as e:
         app.logger.error(f"Error checking task status: {str(e)}")
         return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for Kubernetes probes."""
+    try:
+        # Check if we can connect to Redis
+        cache_service = CacheService()
+        cache_service.get("health_check")
+
+        # Check if we can initialize the classifier
+        classifier = ContentClassifier()
+
+        return jsonify({
+            'status': 'healthy',
+            'redis': 'connected',
+            'classifier': 'initialized'
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'status': 'unhealthy',
+            'error': str(e)
+        }), 500
 
 if __name__ == '__main__':
     app.run(debug=True)

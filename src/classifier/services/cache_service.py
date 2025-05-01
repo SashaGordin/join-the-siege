@@ -3,7 +3,7 @@
 import redis
 import json
 import hashlib
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, Union
 import logging
 from functools import wraps
 import os
@@ -51,16 +51,20 @@ class CacheService:
         """Generate a cache key with prefix."""
         return f"{key_type}:{identifier}"
 
-    def _generate_file_hash(self, file_content: str) -> str:
+    def _generate_file_hash(self, file_content: Union[str, bytes]) -> str:
         """Generate a hash for file content."""
-        return hashlib.sha256(file_content.encode('utf-8')).hexdigest()
+        if isinstance(file_content, str):
+            content = file_content.encode('utf-8')
+        else:
+            content = file_content
+        return hashlib.sha256(content).hexdigest()
 
-    def get_classification(self, file_content: bytes) -> Optional[Dict[str, Any]]:
+    def get_classification(self, file_content: Union[str, bytes]) -> Optional[Dict[str, Any]]:
         """
         Get cached classification result for a file.
 
         Args:
-            file_content: Raw file content
+            file_content: Raw file content (string or bytes)
 
         Returns:
             Cached classification result or None
@@ -79,12 +83,12 @@ class CacheService:
             logger.error(f"Error retrieving from cache: {str(e)}")
             return None
 
-    def set_classification(self, file_content: bytes, result: Dict[str, Any]) -> bool:
+    def set_classification(self, file_content: Union[str, bytes], result: Dict[str, Any]) -> bool:
         """
         Cache classification result for a file.
 
         Args:
-            file_content: Raw file content
+            file_content: Raw file content (string or bytes)
             result: Classification result to cache
 
         Returns:
