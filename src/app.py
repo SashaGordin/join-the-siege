@@ -257,6 +257,15 @@ def process():
         content = data['content']
         metadata = data.get('metadata', {})
 
+        # Validate industry if provided
+        if 'industry' in metadata:
+            industry = metadata['industry']
+            if industry not in config_manager.list_available_industries():
+                return jsonify({
+                    'error': f'Invalid industry: {industry}. Available industries: '
+                            f'{", ".join(config_manager.list_available_industries())}'
+                }), 400
+
         # Check cache first
         try:
             cache_key = f"document_processing:{document_id}"
@@ -295,9 +304,17 @@ def get_status(task_id):
 
         if task.ready():
             if task.successful():
+                result = task.get()
                 return jsonify({
                     'status': 'completed',
-                    'result': task.get()
+                    'result': {
+                        'document_id': result['document_id'],
+                        'doc_type': result['doc_type'],
+                        'confidence': result['confidence'],
+                        'features': result['features'],
+                        'pattern_matches': result['pattern_matches'],
+                        'metadata': result['metadata']
+                    }
                 })
             elif task.failed():
                 return jsonify({

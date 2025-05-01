@@ -5,7 +5,11 @@ from typing import Dict, List, Optional, Any
 from celery import Task
 from .config.celery_config import celery_app
 from .pattern_learning.pattern_matcher import PatternMatcher
-from .pattern_learning.models import Pattern, PatternMatch
+from .pattern_learning.pattern_store import PatternStore
+from .pattern_learning.pattern_learner import PatternLearner
+from .pattern_learning.pattern_validator import PatternValidator
+from .hybrid_classifier import HybridClassifier
+from .content_classifier import ContentClassifier
 from .services.cache_service import CacheService
 
 logger = logging.getLogger(__name__)
@@ -14,7 +18,7 @@ class BaseTask(Task):
     """Base task class with error handling and retry logic."""
 
     _cache_service = None
-    _pattern_matcher = None
+    _hybrid_classifier = None
 
     @property
     def cache_service(self) -> CacheService:
@@ -24,12 +28,27 @@ class BaseTask(Task):
         return self._cache_service
 
     @property
-    def pattern_matcher(self) -> PatternMatcher:
-        """Get or create pattern matcher instance."""
-        if self._pattern_matcher is None:
-            self._pattern_matcher = PatternMatcher()
-            self._pattern_matcher.cache_service = self.cache_service
-        return self._pattern_matcher
+    def hybrid_classifier(self) -> HybridClassifier:
+        """Get or create hybrid classifier instance."""
+        if self._hybrid_classifier is None:
+            content_classifier = ContentClassifier()
+            pattern_matcher = PatternMatcher()
+            pattern_store = PatternStore()
+            pattern_validator = PatternValidator()
+            pattern_learner = PatternLearner(pattern_store, pattern_validator)
+
+            self._hybrid_classifier = HybridClassifier(
+                content_classifier=content_classifier,
+                pattern_matcher=pattern_matcher,
+                pattern_store=pattern_store,
+                pattern_learner=pattern_learner
+            )
+
+            # Set up cache service
+            pattern_matcher.cache_service = self.cache_service
+            pattern_store.cache_service = self.cache_service
+
+        return self._hybrid_classifier
 
     def on_failure(self, exc, task_id, args, kwargs, einfo):
         """Handle task failure."""
@@ -73,26 +92,42 @@ def process_document(
             logger.info(f"Cache hit for document {document_id}")
             return cached_result
 
-        # Extract features
-        feature_task = extract_features.delay(content, metadata)
-        features = feature_task.get(timeout=300)  # 5 minute timeout
+        # Use hybrid classifier
+        result = self.hybrid_classifier.classify_document(
+            content,
+            industry=metadata.get("industry") if metadata else None
+        )
 
-        # Match patterns
-        pattern_task = match_patterns.delay(content, features)
-        matches = pattern_task.get(timeout=300)
-
-        # Combine results
-        result = {
+        # Convert result to serializable format
+        serialized_result = {
             'document_id': document_id,
-            'features': features,
-            'matches': matches,
-            'metadata': metadata
+            'doc_type': result.doc_type,
+            'confidence': result.confidence,
+            'features': result.features,
+            'pattern_matches': [
+                {
+                    'pattern_id': match.pattern.id,
+                    'text': match.text,
+                    'start': match.start,
+                    'end': match.end,
+                    'match_type': match.match_type.value,
+                    'confidence': match.confidence.value,
+                    'context': match.context
+                }
+                for match in result.pattern_matches
+            ] if result.pattern_matches else [],
+            'metadata': {
+                **(metadata if metadata else {}),
+                **result.metadata
+            },
+            'status': 'completed',
+            'error': None
         }
 
         # Cache result
-        self.cache_service.set(cache_key, result, expire=3600)
+        self.cache_service.set(cache_key, serialized_result, expire=3600)
 
-        return result
+        return serialized_result
 
     except Exception as e:
         logger.error(f"Error processing document {document_id}: {str(e)}")

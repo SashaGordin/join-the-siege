@@ -25,9 +25,9 @@ class HybridClassifier:
 
     def __init__(self):
         """Initialize the hybrid classifier."""
-        self.content_classifier = ContentClassifier()
-        self.pattern_matcher = PatternMatcher()
         self.pattern_store = PatternStore()
+        self.pattern_matcher = PatternMatcher()
+        self.content_classifier = ContentClassifier(pattern_store=self.pattern_store)
 
     def classify_document(
         self,

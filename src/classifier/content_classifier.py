@@ -39,16 +39,18 @@ class ContentClassifier:
     A content-based document classifier that uses LLM to determine document type.
     """
 
-    def __init__(self, default_industry: str = None):
+    def __init__(self, default_industry: str = None, pattern_store: Optional['PatternStore'] = None):
         """
         Initialize the content classifier.
 
         Args:
             default_industry: Default industry to use for classification
+            pattern_store: Optional PatternStore instance for pattern matching
         """
         self.mime_magic = magic.Magic(mime=True)
         self.default_industry = default_industry
         self.config_manager = IndustryConfigManager()
+        self.pattern_store = pattern_store
 
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
@@ -602,17 +604,19 @@ Format features as "Feature Type: Value" for easy parsing."""
             text = self.extract_text(file_path)
 
             # --- Pattern-based feature extraction ---
-            patterns = self.pattern_store.get_patterns_by_industry(target_industry)
-            pattern_matches = self.pattern_matcher.find_matches(text, patterns)
-            pattern_features = [
-                {
-                    "feature_type": m.pattern.feature_type,
-                    "text": m.text,
-                    "confidence": m.confidence.value,
-                    "context": m.context
-                }
-                for m in pattern_matches
-            ]
+            pattern_features = []
+            if self.pattern_store is not None:
+                patterns = self.pattern_store.get_patterns_by_industry(target_industry)
+                pattern_matches = self.pattern_matcher.find_matches(text, patterns)
+                pattern_features = [
+                    {
+                        "feature_type": m.pattern.feature_type,
+                        "text": m.text,
+                        "confidence": m.confidence.value,
+                        "context": m.context
+                    }
+                    for m in pattern_matches
+                ]
 
             # --- LLM classification ---
             result = self._classify_with_llm(text, target_industry)

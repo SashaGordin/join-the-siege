@@ -9,18 +9,74 @@ from redis.exceptions import ConnectionError
 from flask import Flask
 from src.app import app as flask_app
 from src.classifier.services.cache_service import CacheService
+from src.classifier.hybrid_classifier import HybridClassificationResult
+from src.classifier.pattern_learning.models import Pattern, PatternMatch, PatternType, MatchType, ConfidenceScore
 
 @pytest.fixture
-def mock_async_result():
+def mock_hybrid_result():
+    """Create a mock hybrid classification result."""
+    pattern = Pattern(
+        id="test-pattern",
+        type=PatternType.REGEX,
+        expression=r"\$\d+\.\d{2}",
+        feature_type="amount",
+        industry="financial"
+    )
+
+    match = PatternMatch(
+        pattern=pattern,
+        text="$100.00",
+        start=0,
+        end=7,
+        match_type=MatchType.EXACT,
+        confidence=ConfidenceScore(0.9)
+    )
+
+    return HybridClassificationResult(
+        doc_type="invoice",
+        confidence=0.9,
+        features=[
+            {
+                "type": "amount",
+                "values": ["$100.00"],
+                "present": True
+            }
+        ],
+        pattern_matches=[match],
+        llm_result=None,
+        metadata={"industry": "financial"}
+    )
+
+@pytest.fixture
+def mock_async_result(mock_hybrid_result):
     """Create a mock async result."""
     mock_result = MagicMock()
     mock_result.id = 'test-task-id'
     mock_result.ready.return_value = True
     mock_result.successful.return_value = True
-    mock_result.get.return_value = {
-        'features': {'test_feature': True},
-        'matches': [{'text': 'test match', 'confidence': 0.9}]
+
+    # Convert HybridClassificationResult to serializable format
+    serialized_result = {
+        'document_id': 'test-doc-1',
+        'doc_type': mock_hybrid_result.doc_type,
+        'confidence': mock_hybrid_result.confidence,
+        'features': mock_hybrid_result.features,
+        'pattern_matches': [
+            {
+                'pattern_id': match.pattern.id,
+                'text': match.text,
+                'start': match.start,
+                'end': match.end,
+                'match_type': match.match_type.value,
+                'confidence': match.confidence.value,
+                'context': match.context
+            }
+            for match in mock_hybrid_result.pattern_matches
+        ],
+        'metadata': mock_hybrid_result.metadata
     }
+
+    mock_result.get.return_value = serialized_result
     return mock_result
 
 @pytest.fixture
@@ -72,13 +128,33 @@ def test_process_document_cache_hit(client, app_with_mocks):
     doc = {
         'document_id': 'test-doc-2',
         'content': 'This is a cache hit test.',
-        'metadata': {'test': True}
+        'metadata': {'industry': 'financial'}
     }
 
     # Set up cache hit for second request
     cached_result = {
-        'features': {'cached': True},
-        'matches': [{'text': 'cached match', 'confidence': 0.95}]
+        'document_id': 'test-doc-2',
+        'doc_type': 'invoice',
+        'confidence': 0.9,
+        'features': [
+            {
+                'type': 'amount',
+                'values': ['$100.00'],
+                'present': True
+            }
+        ],
+        'pattern_matches': [
+            {
+                'pattern_id': 'test-pattern',
+                'text': '$100.00',
+                'start': 0,
+                'end': 7,
+                'match_type': 'EXACT',
+                'confidence': 0.9,
+                'context': {}
+            }
+        ],
+        'metadata': {'industry': 'financial'}
     }
 
     with patch('src.app.cache_service') as mock_cache:
@@ -508,8 +584,14 @@ def test_load_with_long_tasks(client, app_with_mocks):
         mock.ready.side_effect = lambda: task_states[task_id]['checks'] >= 3
         mock.successful.return_value = True
         mock.get.return_value = {
+            'document_id': f'long-task-doc-{task_id.split("-")[-1]}',
+            'doc_type': 'test_type',
+            'confidence': 0.9,
             'features': {'test_feature': True},
-            'matches': [{'text': 'test match', 'confidence': 0.9}]
+            'pattern_matches': [{'text': 'test match', 'confidence': 0.9}],
+            'metadata': {'test': True},
+            'status': 'completed',
+            'error': None
         }
         return mock
 
