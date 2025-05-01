@@ -22,3 +22,5 @@ celery==5.3.6
 prometheus-client==0.19.0
 flask-limiter==3.5.0
 gunicorn==21.2.0
+docker==7.0.0
+requests==2.31.0

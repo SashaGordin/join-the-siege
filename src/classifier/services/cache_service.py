@@ -9,12 +9,16 @@ from functools import wraps
 import os
 from dotenv import load_dotenv
 from src.classifier.pattern_learning.models import Pattern, PatternMatch
+import time
 
 # Load environment variables
 load_dotenv()
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 class CacheService:
@@ -30,26 +34,78 @@ class CacheService:
 
     def __init__(self):
         """Initialize Redis connection."""
-        self.redis_client = redis.Redis(
-            host=os.getenv('REDIS_HOST', 'localhost'),
-            port=int(os.getenv('REDIS_PORT', 6379)),
-            db=0,
-            decode_responses=True
-        )
-        self._test_connection()
+        # Get Redis configuration from environment with defaults
+        # In test environment, always use localhost
+        is_test = os.getenv('TESTING', '').lower() == 'true'
+        self.host = 'localhost' if is_test else os.getenv('REDIS_HOST', 'localhost')
+        self.port = int(os.getenv('REDIS_PORT', 6379))
+        self.db = int(os.getenv('REDIS_DB', 0))
+
+        logger.info(f"Initializing Redis connection to {self.host}:{self.port} (DB: {self.db})")
+        logger.info(f"Environment variables:")
+        logger.info(f"- TESTING: {os.getenv('TESTING', '(not set)')}")
+        logger.info(f"- REDIS_HOST: {os.getenv('REDIS_HOST', '(not set)')}")
+        logger.info(f"- REDIS_PORT: {os.getenv('REDIS_PORT', '(not set)')}")
+        logger.info(f"- REDIS_DB: {os.getenv('REDIS_DB', '(not set)')}")
+
+        max_retries = 3
+        retry_delay = 1  # seconds
+
+        for attempt in range(max_retries):
+            try:
+                self.redis_client = redis.Redis(
+                    host=self.host,
+                    port=self.port,
+                    db=self.db,
+                    decode_responses=True,
+                    socket_timeout=5,
+                    retry_on_timeout=True,
+                    health_check_interval=30
+                )
+                self._test_connection()
+                logger.info("Redis connection initialized successfully")
+                break
+            except redis.ConnectionError as e:
+                error_msg = f"Redis connection attempt {attempt + 1}/{max_retries} failed: {str(e)}"
+                logger.error(error_msg)
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                else:
+                    raise
 
     def _test_connection(self):
         """Test Redis connection."""
         try:
             self.redis_client.ping()
-            logger.info("Successfully connected to Redis")
+            info = self.redis_client.info()
+            logger.info(f"Redis connection test successful:")
+            logger.info(f"- Connected to: {self.host}:{self.port}")
+            logger.info(f"- Database: {self.db}")
+            logger.info(f"- Redis version: {info.get('redis_version')}")
+            logger.info(f"- Role: {info.get('role')}")
+            logger.info(f"- Connected clients: {info.get('connected_clients')}")
+
+            # Test basic operations
+            test_key = "test_connection"
+            test_value = "test_value"
+            self.redis_client.set(test_key, test_value)
+            retrieved = self.redis_client.get(test_key)
+            self.redis_client.delete(test_key)
+
+            if retrieved != test_value:
+                raise redis.ConnectionError(f"Redis read/write test failed. Expected {test_value}, got {retrieved}")
+            logger.info("Redis read/write test successful")
+
         except redis.ConnectionError as e:
-            logger.error(f"Failed to connect to Redis: {str(e)}")
+            error_msg = f"Failed to connect to Redis: {str(e)}"
+            logger.error(error_msg)
             raise
 
     def _generate_key(self, key_type: str, identifier: str) -> str:
         """Generate a cache key with prefix."""
-        return f"{key_type}:{identifier}"
+        key = f"{key_type}:{identifier}"
+        logger.debug(f"Generated cache key: {key}")
+        return key
 
     def _generate_file_hash(self, file_content: Union[str, bytes]) -> str:
         """Generate a hash for file content."""
@@ -57,56 +113,93 @@ class CacheService:
             content = file_content.encode('utf-8')
         else:
             content = file_content
-        return hashlib.sha256(content).hexdigest()
+        file_hash = hashlib.sha256(content).hexdigest()
+        logger.debug(f"Generated file hash: {file_hash}")
+        return file_hash
 
     def get_classification(self, file_content: Union[str, bytes]) -> Optional[Dict[str, Any]]:
-        """
-        Get cached classification result for a file.
-
-        Args:
-            file_content: Raw file content (string or bytes)
-
-        Returns:
-            Cached classification result or None
-        """
+        """Get cached classification result for a file."""
         file_hash = self._generate_file_hash(file_content)
         key = self._generate_key('classification', file_hash)
 
+        logger.info(f"\n=== CacheService Debug (get_classification) ===")
+        logger.info(f"Redis connection info:")
+        logger.info(f"- Host: {self.host}")
+        logger.info(f"- Port: {self.port}")
+        logger.info(f"- DB: {self.db}")
+        logger.info(f"Operation info:")
+        logger.info(f"- Looking up key: {key}")
+        logger.info(f"- File hash: {file_hash}")
+        logger.info(f"- Current Redis keys: {self.redis_client.keys('*')}")
+
         try:
             cached = self.redis_client.get(key)
+            logger.info(f"\nResult:")
+            logger.info(f"- Cache hit: {cached is not None}")
             if cached:
-                logger.info(f"Cache hit for classification: {file_hash}")
-                return json.loads(cached)
+                logger.info(f"- Cached value length: {len(cached)} bytes")
+                logger.info(f"- Cached value preview: {cached[:200]}...")
+                try:
+                    result = json.loads(cached)
+                    return result
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to decode cached JSON: {e}")
+                    return None
             logger.info(f"Cache miss for classification: {file_hash}")
             return None
         except Exception as e:
             logger.error(f"Error retrieving from cache: {str(e)}")
+            logger.exception("Full exception details:")
             return None
 
     def set_classification(self, file_content: Union[str, bytes], result: Dict[str, Any]) -> bool:
-        """
-        Cache classification result for a file.
-
-        Args:
-            file_content: Raw file content (string or bytes)
-            result: Classification result to cache
-
-        Returns:
-            bool: True if successful
-        """
+        """Cache classification result for a file."""
         file_hash = self._generate_file_hash(file_content)
         key = self._generate_key('classification', file_hash)
 
+        logger.info(f"\n=== CacheService Debug (set_classification) ===")
+        logger.info(f"Redis connection info:")
+        logger.info(f"- Host: {self.host}")
+        logger.info(f"- Port: {self.port}")
+        logger.info(f"- DB: {self.db}")
+        logger.info(f"Operation info:")
+        logger.info(f"- Setting key: {key}")
+        logger.info(f"- File hash: {file_hash}")
+        logger.info(f"- Current Redis keys before set: {self.redis_client.keys('*')}")
+
         try:
-            self.redis_client.setex(
+            serialized = json.dumps(result)
+            logger.info(f"- Serialized data length: {len(serialized)} bytes")
+            logger.info(f"- Serialized data preview: {serialized[:200]}...")
+
+            # Try to set with expiration
+            success = self.redis_client.setex(
                 key,
                 self.TTL_MAPPING['classification'],
-                json.dumps(result)
+                serialized
             )
-            logger.info(f"Cached classification result: {file_hash}")
-            return True
+
+            # Verify the set operation
+            verification = self.redis_client.get(key)
+            logger.info(f"\nVerification:")
+            logger.info(f"- Operation success: {success}")
+            logger.info(f"- Key exists after set: {verification is not None}")
+            logger.info(f"- All Redis keys after set: {self.redis_client.keys('*')}")
+            logger.info(f"- Redis info: {self.redis_client.info()}")
+
+            if success and verification:
+                logger.info(f"Successfully cached classification result: {file_hash}")
+                return True
+            else:
+                if not success:
+                    logger.error("Redis setex operation failed")
+                if not verification:
+                    logger.error("Verification failed - key not found after set")
+                return False
+
         except Exception as e:
             logger.error(f"Error caching result: {str(e)}")
+            logger.exception("Full exception details:")
             return False
 
     def get_pattern(self, pattern_id: str) -> Optional[Dict[str, Any]]:

@@ -4,6 +4,8 @@ import os
 import tempfile
 from pathlib import Path
 import uuid
+import hashlib
+import logging
 
 from src.classifier import ContentClassifier
 from src.utils.file_validator import FileValidator
@@ -22,6 +24,10 @@ from src.classifier.tasks import process_document
 from src.classifier.services.cache_service import CacheService
 
 app = Flask(__name__)
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # Initialize our file validator, classifier, and config manager
 file_validator = FileValidator()
@@ -61,6 +67,8 @@ def classify_file_route():
     Expects a file in the request.files with key 'file'.
     Optionally accepts an 'industry' parameter to specify the industry context.
     """
+    print("\n=== Classify File Route Debug ===")
+
     if 'file' not in request.files:
         return jsonify({"error": "No file part in the request"}), 400
 
@@ -84,6 +92,7 @@ def classify_file_route():
     try:
         # Save uploaded file with correct extension
         temp_path = save_uploaded_file(file)
+        logger.info(f"Saved uploaded file to: {temp_path}")
 
         # Validate the file
         try:
@@ -104,54 +113,50 @@ def classify_file_route():
         if mime_type.startswith('image/'):
             return jsonify({"error": "OCR not implemented yet"}), 501
 
+        # Read file content for caching
+        file_content = Path(temp_path).read_bytes()
+        content_hash = hashlib.sha256(file_content).hexdigest()
+        logger.info(f"File content hash: {content_hash}")
+
+        # Log Redis connection info
+        redis_info = cache_service.redis_client.info()
+        logger.info(f"Redis connection info:")
+        logger.info(f"- Host: {cache_service.redis_client.connection_pool.connection_kwargs['host']}")
+        logger.info(f"- Port: {cache_service.redis_client.connection_pool.connection_kwargs['port']}")
+        logger.info(f"- DB: {cache_service.redis_client.connection_pool.connection_kwargs['db']}")
+        logger.info(f"- Connected clients: {redis_info.get('connected_clients')}")
+        logger.info(f"- Redis version: {redis_info.get('redis_version')}")
+
         # Check cache first
-        file_content = Path(temp_path).read_text()
+        logger.info("Checking cache for classification")
         cached_result = cache_service.get_classification(file_content)
-
         if cached_result:
-            app.logger.info("Cache hit for classification")
-            # Generate preview if possible
-            try:
-                preview_data = file_validator.get_file_preview(temp_path)
-            except Exception:
-                preview_data = {"preview_available": False}
+            logger.info("Cache hit - returning cached result")
+            return jsonify(cached_result), 200
 
-            response_data = {
-                "classification": {
-                    "document_type": cached_result["class"],
-                    "confidence": cached_result["confidence"],
-                    "features": cached_result["features"],
-                    "pattern_features": cached_result.get("pattern_features", [])
-                },
-                "file_info": {
-                    "mime_type": mime_type,
-                    "filename": file.filename
-                },
-                "preview": preview_data
-            }
-            return jsonify(response_data), 200
+        # Generate preview if possible
+        try:
+            preview_data = file_validator.get_file_preview(temp_path)
+        except Exception:
+            preview_data = {"preview_available": False}
 
         # Classify the file if not in cache
         try:
-            classification_result = content_classifier.classify_file(temp_path, industry=industry)
+            logger.info("Cache miss - classifying file")
+            logger.info("Cache miss - performing classification")
+            raw_result = content_classifier.classify_file(temp_path, industry=industry)
 
-            # Cache the result
-            cache_service.set_classification(file_content, classification_result)
+            # Transform the result to our standard format
+            classification_result = {
+                "document_type": raw_result["class"],
+                "confidence": raw_result["confidence"],
+                "features": raw_result["features"],
+                "pattern_features": raw_result.get("pattern_features", [])
+            }
 
-            # Generate preview if possible
-            try:
-                preview_data = file_validator.get_file_preview(temp_path)
-            except Exception:
-                preview_data = {"preview_available": False}
-
-            # Add industry-specific information if applicable
+            # Prepare the complete response data
             response_data = {
-                "classification": {
-                    "document_type": classification_result["class"],
-                    "confidence": classification_result["confidence"],
-                    "features": classification_result["features"],
-                    "pattern_features": classification_result.get("pattern_features", [])
-                },
+                "classification": classification_result,
                 "file_info": {
                     "mime_type": mime_type,
                     "filename": file.filename
@@ -159,8 +164,8 @@ def classify_file_route():
                 "preview": preview_data
             }
 
+            # Add industry-specific validation info if applicable
             if industry:
-                # Add industry-specific validation info
                 validation_warnings = [
                     f for f in classification_result["features"]
                     if f["type"] == "validation_warning"
@@ -170,6 +175,25 @@ def classify_file_route():
                         "warnings": [w["values"] for w in validation_warnings],
                         "industry": industry
                     }
+
+            # Before caching
+            logger.info("Preparing to cache classification result")
+            logger.info(f"Current Redis keys: {cache_service.redis_client.keys('*')}")
+
+            # Cache the complete response data
+            success = cache_service.set_classification(file_content, response_data)
+            if not success:
+                logger.error("Failed to cache classification result")
+            else:
+                logger.info("Successfully cached classification result")
+                # Verify the cache
+                verification = cache_service.get_classification(file_content)
+                if verification:
+                    logger.info("Cache verification successful")
+                    logger.info(f"Redis keys after caching: {cache_service.redis_client.keys('*')}")
+                else:
+                    logger.error("Cache verification failed")
+                    logger.error(f"Redis keys after failed verification: {cache_service.redis_client.keys('*')}")
 
             return jsonify(response_data), 200
 

@@ -1,6 +1,7 @@
 """Celery tasks for asynchronous processing."""
 
 import logging
+import hashlib
 from typing import Dict, List, Optional, Any
 from celery import Task
 from .config.celery_config import celery_app
@@ -85,8 +86,12 @@ def process_document(
     """
     logger.info(f"Processing document {document_id}")
     try:
+        # Generate cache key using content hash
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        cache_key = f"classification:{content_hash}"
+        logger.info(f"Using cache key: {cache_key}")
+
         # Check cache first
-        cache_key = f"document_processing:{document_id}"
         cached_result = self.cache_service.get(cache_key)
         if cached_result:
             logger.info(f"Cache hit for document {document_id}")
@@ -125,7 +130,9 @@ def process_document(
         }
 
         # Cache result
+        logger.info(f"Caching result with key: {cache_key}")
         self.cache_service.set(cache_key, serialized_result, expire=3600)
+        logger.info(f"Cache set complete for key: {cache_key}")
 
         return serialized_result
 
