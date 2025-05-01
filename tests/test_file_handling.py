@@ -140,3 +140,101 @@ class TestFileHandling:
         assert 'thumbnail' in preview  # For images
         assert 'mime_type' in preview
         assert preview['mime_type'] == 'image/png'
+
+    def test_word_document_handling(self, tmp_path):
+        """Test handling of Word documents."""
+        try:
+            from docx import Document
+
+            # Create a test Word document
+            doc = Document()
+            doc.add_paragraph("Test content for Word document")
+            doc.add_paragraph("Second paragraph")
+
+            # Add a table
+            table = doc.add_table(rows=2, cols=2)
+            table.cell(0, 0).text = "Cell 1"
+            table.cell(0, 1).text = "Cell 2"
+            table.cell(1, 0).text = "Cell 3"
+            table.cell(1, 1).text = "Cell 4"
+
+            doc_path = tmp_path / "test.docx"
+            doc.save(doc_path)
+
+            # Test file validation
+            validator = FileValidator()
+            assert validator.is_valid_file_type(doc_path) == True
+            assert validator.get_file_type(doc_path) == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+            # Test preview generation
+            preview = validator.get_file_preview(doc_path)
+            assert preview['preview_available'] == True
+            assert "Test content" in preview['text_preview']
+
+            # Test text extraction
+            from src.classifier import ContentClassifier
+            classifier = ContentClassifier()
+            text = classifier.extract_text(doc_path)
+            assert "Test content for Word document" in text
+            assert "Second paragraph" in text
+            assert "Cell 1" in text
+            assert "Cell 4" in text
+        except ImportError:
+            pytest.skip("python-docx not installed")
+
+    def test_excel_document_handling(self, tmp_path):
+        """Test handling of Excel documents."""
+        try:
+            from openpyxl import Workbook
+
+            # Create a test Excel document
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Test Sheet"
+            ws['A1'] = "Header 1"
+            ws['B1'] = "Header 2"
+            ws['A2'] = "Data 1"
+            ws['B2'] = "Data 2"
+
+            excel_path = tmp_path / "test.xlsx"
+            wb.save(excel_path)
+
+            # Test file validation
+            validator = FileValidator()
+            assert validator.is_valid_file_type(excel_path) == True
+            assert validator.get_file_type(excel_path) == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+            # Test preview generation
+            preview = validator.get_file_preview(excel_path)
+            assert preview['preview_available'] == True
+            assert "Header 1" in preview['text_preview']
+            assert "Data 1" in preview['text_preview']
+
+            # Test text extraction
+            from src.classifier import ContentClassifier
+            classifier = ContentClassifier()
+            text = classifier.extract_text(excel_path)
+            assert "Header 1" in text
+            assert "Header 2" in text
+            assert "Data 1" in text
+            assert "Data 2" in text
+            assert "Test Sheet" in text
+        except ImportError:
+            pytest.skip("openpyxl not installed")
+
+    def test_invalid_office_document(self, tmp_path):
+        """Test handling of corrupted office documents."""
+        # Create an invalid .docx file
+        doc_path = tmp_path / "invalid.docx"
+        doc_path.write_text("This is not a valid DOCX file")
+
+        validator = FileValidator()
+        with pytest.raises(InvalidFileTypeError):
+            validator.is_valid_file_type(doc_path)
+
+        # Create an invalid .xlsx file
+        xlsx_path = tmp_path / "invalid.xlsx"
+        xlsx_path.write_text("This is not a valid XLSX file")
+
+        with pytest.raises(InvalidFileTypeError):
+            validator.is_valid_file_type(xlsx_path)

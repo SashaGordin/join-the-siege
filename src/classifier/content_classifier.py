@@ -244,6 +244,85 @@ Do not classify as medical documents unless absolutely certain."""
                     return ""  # Return empty string for images with no text
             raise TextExtractionError(f"Failed to extract text from image: {str(e)}")
 
+    def _extract_text_from_word(self, file_path: Path) -> str:
+        """
+        Extract text from Word documents (.doc, .docx).
+
+        Args:
+            file_path: Path to the Word document
+
+        Returns:
+            str: Extracted text content
+
+        Raises:
+            TextExtractionError: If text extraction fails
+        """
+        try:
+            from docx import Document
+            doc = Document(file_path)
+            text = []
+
+            # Extract main document text
+            for paragraph in doc.paragraphs:
+                text.append(paragraph.text)
+
+            # Extract text from tables
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        text.append(cell.text)
+
+            return '\n'.join(text)
+        except Exception as e:
+            raise TextExtractionError(f"Failed to extract text from Word document: {str(e)}")
+
+    def _extract_text_from_excel(self, file_path: Path) -> str:
+        """
+        Extract text from Excel files (.xls, .xlsx).
+
+        Args:
+            file_path: Path to the Excel file
+
+        Returns:
+            str: Extracted text content
+
+        Raises:
+            TextExtractionError: If text extraction fails
+        """
+        try:
+            text = []
+            file_type = self.mime_magic.from_file(str(file_path))
+
+            if file_type == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+                # Handle .xlsx files
+                from openpyxl import load_workbook
+                wb = load_workbook(file_path, read_only=True, data_only=True)
+
+                for sheet in wb.worksheets:
+                    sheet_text = []
+                    for row in sheet.rows:
+                        row_text = [str(cell.value) if cell.value is not None else '' for cell in row]
+                        sheet_text.append(' '.join(row_text))
+                    text.append('\n'.join(sheet_text))
+                    text.append(f"--- End of Sheet: {sheet.title} ---\n")
+
+            elif file_type == 'application/vnd.ms-excel':
+                # Handle .xls files
+                import xlrd
+                wb = xlrd.open_workbook(file_path)
+
+                for sheet in wb.sheets():
+                    sheet_text = []
+                    for row in range(sheet.nrows):
+                        row_text = [str(sheet.cell_value(row, col)) for col in range(sheet.ncols)]
+                        sheet_text.append(' '.join(row_text))
+                    text.append('\n'.join(sheet_text))
+                    text.append(f"--- End of Sheet: {sheet.name} ---\n")
+
+            return '\n'.join(text)
+        except Exception as e:
+            raise TextExtractionError(f"Failed to extract text from Excel file: {str(e)}")
+
     def extract_text(self, file_path: Union[str, Path]) -> str:
         """
         Extract text content from a file.
@@ -266,8 +345,14 @@ Do not classify as medical documents unless absolutely certain."""
                 return self._extract_text_from_pdf(file_path)
             elif mime_type.startswith('image/'):
                 return self._extract_text_from_image(file_path)
+            elif mime_type in ['application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                             'application/msword']:
+                return self._extract_text_from_word(file_path)
+            elif mime_type in ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                             'application/vnd.ms-excel']:
+                return self._extract_text_from_excel(file_path)
             else:
-                # For text files or unknown types, try reading as text with different encodings
+                # For text files or unknown types, try reading as text
                 try:
                     return file_path.read_text(encoding='utf-8')
                 except UnicodeDecodeError:

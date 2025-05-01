@@ -35,6 +35,11 @@ class FileValidator:
         'text/x-c': '.txt',       # C files are text
         'text/x-cpp': '.txt',     # C++ files are text
         'text/x-script': '.txt',  # Script files are text
+        # Office document formats
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+        'application/msword': '.doc',
+        'application/vnd.ms-excel': '.xls',
     }
 
     def __init__(self):
@@ -112,6 +117,18 @@ class FileValidator:
                 return True
             raise InvalidFileTypeError(f"File extension does not match content type")
 
+        # For Word documents
+        if actual_mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+            if actual_ext == '.docx':
+                return True
+            raise InvalidFileTypeError(f"File extension does not match content type")
+
+        # For Excel documents
+        if actual_mime_type == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+            if actual_ext == '.xlsx':
+                return True
+            raise InvalidFileTypeError(f"File extension does not match content type")
+
         # If we get here, the file type is not supported
         raise InvalidFileTypeError(f"Unsupported file type: {actual_mime_type}")
 
@@ -123,54 +140,82 @@ class FileValidator:
             file_path: Path to the file
 
         Returns:
-            dict: Preview data including mime_type and preview-specific data
-
-        Raises:
-            FileAccessError: If file cannot be accessed
-            InvalidFileTypeError: If file type is not supported
+            Dict containing preview information
         """
         file_path = Path(file_path)
         mime_type = self.get_file_type(file_path)
 
-        # Initialize preview data
-        preview_data = {
+        preview = {
+            'preview_available': False,
             'mime_type': mime_type,
-            'preview_available': False
+            'text_preview': None,
+            'metadata': {}
         }
 
         try:
-            # Validate file type (but allow images through)
-            if not mime_type.startswith('image/'):
-                self.is_valid_file_type(file_path)
-
-            if mime_type.startswith('image/'):
-                # Handle image preview
-                with Image.open(file_path) as img:
-                    # Create thumbnail
-                    img.thumbnail(self.MAX_PREVIEW_SIZE)
-                    # Save thumbnail to bytes
-                    thumb_io = io.BytesIO()
-                    img.save(thumb_io, format=img.format)
-                    preview_data['thumbnail'] = thumb_io.getvalue()
-                    preview_data['dimensions'] = img.size
-                    preview_data['preview_available'] = True
+            # Handle different file types
+            if mime_type.startswith('text/'):
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    preview['text_preview'] = f.read(1000)  # First 1000 chars
+                    preview['preview_available'] = True
 
             elif mime_type == 'application/pdf':
-                # For now, just return the first page info
-                preview_data['preview_available'] = False
+                # Use PyPDF2 for PDF preview
+                from PyPDF2 import PdfReader
+                reader = PdfReader(file_path)
+                if len(reader.pages) > 0:
+                    preview['text_preview'] = reader.pages[0].extract_text()[:1000]
+                    preview['preview_available'] = True
+                    preview['metadata']['pages'] = len(reader.pages)
 
-            elif mime_type.startswith('text/'):
-                # For text files, return first few lines
-                try:
-                    with open(file_path, 'r') as f:
-                        lines = [next(f) for _ in range(10)]
-                        preview_data['text_preview'] = ''.join(lines)
-                        preview_data['preview_available'] = True
-                except (StopIteration, UnicodeDecodeError):
-                    # File has fewer lines or is not readable as text
-                    preview_data['preview_available'] = False
+            elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+                # Use python-docx for Word documents
+                from docx import Document
+                doc = Document(file_path)
+                text = []
+                for para in doc.paragraphs[:5]:  # First 5 paragraphs
+                    text.append(para.text)
+                preview['text_preview'] = '\n'.join(text)[:1000]
+                preview['preview_available'] = True
+                preview['metadata']['paragraphs'] = len(doc.paragraphs)
 
-            return preview_data
+            elif mime_type == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+                # Use openpyxl for Excel documents
+                from openpyxl import load_workbook
+                wb = load_workbook(file_path, read_only=True)
+                text = []
+                sheet = wb.active
+                for row in list(sheet.rows)[:5]:  # First 5 rows
+                    text.append(' | '.join(str(cell.value) for cell in row if cell.value))
+                preview['text_preview'] = '\n'.join(text)[:1000]
+                preview['preview_available'] = True
+                preview['metadata']['sheets'] = len(wb.sheetnames)
+                wb.close()
+
+            elif mime_type in ['image/jpeg', 'image/png']:
+                # Generate both thumbnail and OCR text
+                img = Image.open(file_path)
+
+                # Create thumbnail
+                img.thumbnail(self.MAX_PREVIEW_SIZE)
+                thumb_io = io.BytesIO()
+                img.save(thumb_io, format=img.format)
+                preview['thumbnail'] = thumb_io.getvalue()
+
+                # Add image metadata
+                preview['metadata'].update({
+                    'width': img.width,
+                    'height': img.height,
+                    'format': img.format
+                })
+
+                # Extract text using OCR
+                import pytesseract
+                preview['text_preview'] = pytesseract.image_to_string(img)[:1000]
+                preview['preview_available'] = True
 
         except Exception as e:
-            raise FileCorruptError(f"Could not generate preview: {e}")
+            logger.warning(f"Failed to generate preview for {file_path}: {str(e)}")
+            preview['error'] = str(e)
+
+        return preview
