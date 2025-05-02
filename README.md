@@ -17,7 +17,7 @@ This is a real-world challenge that allows you to demonstrate your approach to b
 - How might you extend the classifier with additional technologies, capabilities, or features?
 
 
-### Part 2: Productionising the Classifier 
+### Part 2: Productionising the Classifier
 
 - How can you ensure the classifier is robust and reliable in a production environment?
 - How can you deploy the classifier to make it accessible to other services and users?
@@ -73,4 +73,4 @@ We encourage you to be creative! Feel free to use any libraries, tools, services
 
 Please aim to spend 3 hours on this challenge.
 
-Once completed, submit your solution by sharing a link to your forked repository. Please also provide a brief write-up of your ideas, approach, and any instructions needed to run your solution. 
+Once completed, submit your solution by sharing a link to your forked repository. Please also provide a brief write-up of your ideas, approach, and any instructions needed to run your solution.

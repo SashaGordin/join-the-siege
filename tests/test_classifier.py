@@ -21,6 +21,8 @@ from src.classifier.exceptions import (
 from src.classifier.services.cache_service import CacheService
 from src.classifier.config.celery_config import celery_app
 from src.classifier.tasks import process_document
+from src.classifier.feature_extraction import extract_features_from_text
+from src.classifier.tasks import extract_features
 
 class TestContentClassifier:
     """
@@ -1042,3 +1044,29 @@ Features:
             raise
 
         logger.info("\n=== test_industry_specific_features completed successfully ===")
+
+def test_extract_features_from_text_basic():
+    text = "Invoice Number: INV-123\nAmount: $100.00\nDate: 2024-01-01"
+    features = extract_features_from_text(text)
+    feature_types = {f["type"] for f in features}
+    assert "invoice_number" in feature_types or "invoice number" in feature_types
+    assert "amount" in feature_types
+    assert "date" in feature_types
+    # Check that values are present
+    assert any(f["value"] == "INV-123" for f in features)
+    assert any("100.00" in f["value"] for f in features)
+    assert any("2024-01-01" in f["value"] for f in features)
+
+def test_extract_features_celery_task():
+    text = "Invoice Number: INV-456\nAmount: $250.00\nDate: 2024-02-02"
+    # Call the Celery task synchronously for testing
+    result = extract_features.apply(args=(text, None)).get(timeout=10)
+    assert "features" in result
+    feature_types = {f["type"] for f in result["features"]}
+    assert "invoice_number" in feature_types or "invoice number" in feature_types
+    assert "amount" in feature_types
+    assert "date" in feature_types
+    # Check that values are present
+    assert any(f["value"] == "INV-456" for f in result["features"])
+    assert any("250.00" in f["value"] for f in result["features"])
+    assert any("2024-02-02" in f["value"] for f in result["features"])

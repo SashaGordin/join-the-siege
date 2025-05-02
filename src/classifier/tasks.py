@@ -12,6 +12,7 @@ from .pattern_learning.pattern_validator import PatternValidator
 from .hybrid_classifier import HybridClassifier
 from .content_classifier import ContentClassifier
 from .services.cache_service import CacheService
+from .feature_extraction import extract_features_from_text
 
 logger = logging.getLogger(__name__)
 
@@ -231,15 +232,14 @@ def extract_features(
             logger.info("Cache hit for feature extraction")
             return cached_result
 
-        # Extract features (implement feature extraction logic)
-        features = {
-            # Feature extraction implementation here
-        }
+        # Extract features using the unified function
+        features = extract_features_from_text(content, metadata)
+        result = {"features": features}
 
         # Cache result
-        self.cache_service.set(cache_key, features, expire=3600)
+        self.cache_service.set(cache_key, result, expire=3600)
 
-        return features
+        return result
 
     except Exception as e:
         logger.error(f"Error in feature extraction: {str(e)}")

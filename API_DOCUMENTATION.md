@@ -392,8 +392,93 @@ Health check endpoint (checks Redis and classifier).
 
 ---
 
-## General Notes
-- All endpoints return JSON.
-- Error responses always include an `"error"` field.
-- File upload endpoints expect the file under the key `file`.
-- Asynchronous processing uses Celery and Redis for task management and caching.
+## Extending to New Industries
+
+The API supports industry-specific document classification and feature extraction. You can add support for new industries by creating a new industry configuration file.
+
+### Steps to Add a New Industry
+
+1. **Create a New Industry Config File**
+   - Go to `src/classifier/config/industries/`.
+   - Copy an existing industry config (e.g., `financial.json`) or create a new file (e.g., `legal.json`).
+
+2. **Define Shared and Specific Features**
+   - In your config, list shared features (by ID) that are common across industries (see `base_features.json`).
+   - Add any industry-specific features under the `specific` section, including patterns, validation rules, and descriptions.
+
+3. **Set Validation Rules and Confidence Thresholds**
+   - Specify which features are required for a valid classification.
+   - Set confidence thresholds for your industry if needed.
+
+4. **Validate Your Config**
+   - The config will be validated against the JSON schema in `src/classifier/config/schemas/industry_schema.json`.
+   - You can use the `IndustryConfigManager` class or run the test suite to check for errors.
+
+5. **(Optional) Add Patterns**
+   - If you want to add new regex or fuzzy patterns for feature extraction, update the relevant sections or use the pattern management utilities.
+
+6. **Test Your Industry**
+   - Add or update tests (see `tests/test_config_manager.py`) to ensure your new industry is recognized and features are extracted as expected.
+   - Restart the service to load the new config.
+
+### Example: Minimal Legal Industry Config
+```json
+{
+  "industry_name": "legal",
+  "version": "1.0.0",
+  "description": "Legal documents configuration",
+  "features": {
+    "shared": ["date", "amount", "signature"],
+    "specific": {
+      "case_number": {
+        "type": "identifier",
+        "importance": "required",
+        "patterns": ["Case\\s+No\\.?\\s*\\d{2}-\\d{4}", "\\d{2}-[A-Z]{2}-\\d{4}"],
+        "validation": {
+          "format": "text",
+          "rules": [{ "type": "regex", "value": "^\\d{2}[-A-Z]*\\d{4}$" }]
+        },
+        "description": "Legal case identifier"
+      }
+    },
+    "validation_rules": {
+      "required_features": ["case_number", "date"]
+    },
+    "confidence_thresholds": {
+      "minimum": 0.7,
+      "high": 0.9
+    }
+  }
+}
+```
+
+For more details, see the code in `src/classifier/config/config_manager.py` and the test examples in `tests/test_config_manager.py`.
+
+---
+
+## Approach and Extension Guide
+
+### Approach
+
+- **Hybrid Classification:** Combines LLM-based and pattern-based extraction for robust, extensible document classification.
+- **Industry Configurability:** Industry-specific features, patterns, and validation rules are defined in JSON configs, making it easy to add new domains.
+- **Scalability:** Asynchronous processing (Celery), caching (Redis), and containerization (Docker) support high throughput and easy scaling.
+
+### How to Extend
+
+- **Add a New Industry:**
+  - See the "Extending to New Industries" section above for step-by-step instructions.
+- **Add New Features or Patterns:**
+  - Update `base_features.json` or the `specific` section in your industry config. Add new patterns in the pattern store if needed.
+- **Add New Endpoints:**
+  - Implement new Flask routes in `src/app.py` and document them in this file.
+- **Improve Extraction:**
+  - Enhance `ContentClassifier`, `PatternMatcher`, or add new extraction modules as needed.
+
+### Key Files
+
+- `src/classifier/config/industries/` — Industry configs
+- `src/classifier/config/base_features.json` — Shared features
+- `src/classifier/content_classifier.py` — LLM-based extraction
+- `src/classifier/pattern_learning/` — Pattern-based extraction
+- `src/app.py` — API endpoints
