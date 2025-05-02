@@ -74,3 +74,5 @@ We encourage you to be creative! Feel free to use any libraries, tools, services
 Please aim to spend 3 hours on this challenge.
 
 Once completed, submit your solution by sharing a link to your forked repository. Please also provide a brief write-up of your ideas, approach, and any instructions needed to run your solution.
+
+> **Note:** All documentation and detailed explanation of the project, including setup, API usage, extension guides, and deployment, can be found in [API_DOCUMENTATION.md](./API_DOCUMENTATION.md).
