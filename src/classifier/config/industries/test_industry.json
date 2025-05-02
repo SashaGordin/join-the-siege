@@ -1,0 +1,38 @@
+{
+  "industry_name": "test_industry",
+  "version": "1.0.0",
+  "description": "Test industry",
+  "features": {
+    "shared": [
+      "date"
+    ],
+    "specific": {
+      "test_feature": {
+        "type": "test",
+        "importance": "required",
+        "patterns": [
+          "Test\\s+Feature"
+        ],
+        "validation": {
+          "format": "text",
+          "rules": [
+            {
+              "type": "regex",
+              "value": "^Test Feature$"
+            }
+          ]
+        },
+        "description": "A test feature"
+      }
+    },
+    "validation_rules": {
+      "required_features": [
+        "test_feature"
+      ]
+    },
+    "confidence_thresholds": {
+      "minimum": 0.5,
+      "high": 0.8
+    }
+  }
+}

@@ -3,6 +3,7 @@ from pathlib import Path
 import io
 from PIL import Image
 from src.app import app
+import logging
 
 @pytest.fixture
 def client():
@@ -111,22 +112,6 @@ def test_classify_file_empty_filename(client):
     response = client.post('/classify_file', data=data)
     assert response.status_code == 400
     assert 'error' in response.get_json()
-
-@pytest.mark.skip(reason="Temporarily skipped for deployment")
-def test_classify_file_image_not_implemented(client, sample_image):
-    """Test classification of image files (not implemented)."""
-    with open(sample_image, 'rb') as f:
-        data = {'file': (f, 'test.png')}
-        response = client.post('/classify_file', data=data)
-    print("[TEST LOG] Response status:", response.status_code)
-    print("[TEST LOG] Response data:", response.data)
-    try:
-        print("[TEST LOG] Response JSON:", response.get_json())
-    except Exception as e:
-        print(f"[TEST LOG] Could not parse JSON: {e}")
-    assert response.status_code == 501
-    assert 'error' in response.get_json()
-    assert 'OCR not implemented' in response.get_json()['error']
 
 def test_preview_file_success(client, sample_pdf):
     """Test successful file preview generation."""

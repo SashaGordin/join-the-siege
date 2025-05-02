@@ -81,6 +81,10 @@ def classify_file_route():
     logger.info(f"Received file: {file.filename}")
     logger.info(f"Content type: {file.content_type}")
 
+    # Early return for image files (not implemented)
+    # if file.content_type.startswith("image/"):
+    #     return jsonify({"error": "Image classification/OCR not implemented"}), 501
+
     try:
         # Save uploaded file with correct extension
         temp_path = save_uploaded_file(file)
