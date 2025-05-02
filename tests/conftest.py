@@ -1,3 +1,5 @@
+import os
+os.environ['DATABASE_URL'] = 'sqlite:///test.db'
 import pytest
 from unittest.mock import MagicMock, patch
 import httpx
