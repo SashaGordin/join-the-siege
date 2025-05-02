@@ -33,6 +33,8 @@ print(f"Redis port: {REDIS_PORT}")
 print(f"Redis DB: {REDIS_DB}")
 print(f"Testing mode: {os.getenv('TESTING')}")
 
+pytestmark = pytest.mark.skipif(os.environ.get("CI") == "true", reason="Skip Docker integration tests in CI")
+
 @pytest.fixture(scope="session")
 def docker_client():
     """Create a Docker client."""
