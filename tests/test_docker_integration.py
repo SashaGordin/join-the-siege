@@ -8,7 +8,6 @@ from pathlib import Path
 import docker
 import redis
 import json
-import logging
 import hashlib
 from dotenv import load_dotenv
 
@@ -149,10 +148,6 @@ def test_classification_endpoint(test_files):
 @pytest.mark.skip(reason="Temporarily skipped for deployment")
 def test_caching_behavior(test_files, redis_client):
     """Test that caching works correctly."""
-    # Configure logging
-    logging.basicConfig(level=logging.DEBUG)
-    logger = logging.getLogger(__name__)
-
     file_path = test_files['invoice']
     print("\n=== Starting Cache Test ===")
 
@@ -183,15 +178,6 @@ def test_caching_behavior(test_files, redis_client):
     print("\nRedis state after first request:")
     print(f"Keys found: {keys}")
 
-    # Print Redis info for debugging
-    info = redis_client.info()
-    print("\nRedis Info:")
-    print(f"- Connected clients: {info.get('connected_clients')}")
-    print(f"- Used memory: {info.get('used_memory_human')}")
-    print(f"- Total keys: {info.get('db0', {}).get('keys', 0)}")
-    print(f"- Redis version: {info.get('redis_version')}")
-    print(f"- Role: {info.get('role')}")
-
     # Verify that a cache key exists with our file hash
     cache_keys = [k for k in keys if 'classification' in k and content_hash in k]
     if not cache_keys:
@@ -199,12 +185,6 @@ def test_caching_behavior(test_files, redis_client):
         print("All keys:", redis_client.keys('*'))
         print("Content hash:", content_hash)
         print("Expected key pattern:", f"classification:{content_hash}")
-
-        # Print Redis connection details from both test and app
-        print("\nTest Redis connection:")
-        print(f"Host: {REDIS_HOST}")
-        print(f"Port: {REDIS_PORT}")
-        print(f"DB: {REDIS_DB}")
 
         # Try to manually set and get a key to verify Redis connection
         test_key = f"test:{content_hash}"

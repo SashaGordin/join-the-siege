@@ -328,22 +328,12 @@ def test_load(client, app_with_mocks, mock_celery, mock_async_result):
     success_threshold = 0.9  # 90% success rate required
     max_avg_time = 1.0  # Maximum average time per request in seconds
 
-    # Set up logging
-    import logging
-    logging.basicConfig(level=logging.DEBUG)
-    logger = logging.getLogger(__name__)
-
     # Configure mock outside the request function to ensure consistent state
     mock_celery.return_value = mock_async_result
-    logger.info("Initial mock configuration:")
-    logger.info(f"Mock celery task ID: {mock_async_result.id}")
-    logger.info(f"Mock celery ready: {mock_async_result.ready()}")
-    logger.info(f"Mock celery successful: {mock_async_result.successful()}")
 
     def make_request():
         start_time = time.time()
         request_id = f'load-test-{time.time()}'
-        logger.info(f"\n=== Starting request {request_id} ===")
 
         try:
             # Create a new test client for each request
@@ -353,28 +343,17 @@ def test_load(client, app_with_mocks, mock_celery, mock_async_result):
                     'content': 'Load test content',
                     'metadata': {'test': True}
                 }
-                logger.info(f"Sending request with payload: {payload}")
 
                 # Make the request within the test client context
                 response = test_client.post('/process', json=payload)
                 duration = time.time() - start_time
 
-                logger.info(f"Response status: {response.status_code}")
-                try:
-                    response_data = response.get_json()
-                    logger.info(f"Response data: {response_data}")
-                except Exception as e:
-                    logger.error(f"Failed to get JSON from response: {e}")
-                    logger.error(f"Response content: {response.data}")
-                    response_data = None
-
                 result = {
                     'success': response.status_code == 200,
                     'duration': duration,
                     'status_code': response.status_code,
-                    'response_data': response_data
+                    'response_data': response.get_json()
                 }
-                logger.info(f"Request result: {result}")
                 return result
 
         except Exception as e:
@@ -384,7 +363,6 @@ def test_load(client, app_with_mocks, mock_celery, mock_async_result):
                 'duration': duration,
                 'error': str(e)
             }
-            logger.error(f"Request failed with error: {error_result}")
             return error_result
 
     print("\nStarting load test...")
@@ -394,7 +372,6 @@ def test_load(client, app_with_mocks, mock_celery, mock_async_result):
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
         futures = []
         for i in range(num_requests):
-            logger.info(f"Submitting request {i+1}/{num_requests}")
             futures.append(executor.submit(make_request))
             time.sleep(0.1)  # Small delay between requests
 
@@ -403,9 +380,7 @@ def test_load(client, app_with_mocks, mock_celery, mock_async_result):
             try:
                 result = future.result()
                 results.append(result)
-                logger.info(f"Completed request with result: {result}")
             except Exception as e:
-                logger.error(f"Future failed with error: {e}")
                 results.append({'success': False, 'error': str(e)})
 
     # Calculate statistics
@@ -415,32 +390,13 @@ def test_load(client, app_with_mocks, mock_celery, mock_async_result):
     max_time = max(r['duration'] for r in results)
 
     # Log detailed results
-    logger.info("\n=== Detailed Results ===")
-    logger.info(f"Total requests: {num_requests}")
-    logger.info(f"Successful requests: {successes}")
-    logger.info(f"Failed requests: {num_requests - successes}")
-    logger.info(f"Success rate: {success_rate:.2%}")
-    logger.info(f"Average time: {avg_time:.3f}s")
-    logger.info(f"Max time: {max_time:.3f}s")
-
-    # Log all failed requests
-    failed_requests = [r for r in results if not r['success']]
-    if failed_requests:
-        logger.error("\n=== Failed Requests ===")
-        for i, fail in enumerate(failed_requests, 1):
-            logger.error(f"Failure {i}:")
-            logger.error(f"Status code: {fail.get('status_code')}")
-            logger.error(f"Response data: {fail.get('response_data')}")
-            if fail.get('response_data') and 'error' in fail['response_data']:
-                logger.error(f"Response error: {fail['response_data']['error']}")
-            logger.error(f"Error: {fail.get('error')}")
-
-    print(f"\nLoad Test Results:")
-    print(f"Total Requests: {num_requests}")
-    print(f"Concurrent Threads: {num_threads}")
-    print(f"Success Rate: {success_rate:.2%}")
-    print(f"Average Time: {avg_time:.3f}s")
-    print(f"Max Time: {max_time:.3f}s")
+    print("\n=== Detailed Results ===")
+    print(f"Total requests: {num_requests}")
+    print(f"Successful requests: {successes}")
+    print(f"Failed requests: {num_requests - successes}")
+    print(f"Success rate: {success_rate:.2%}")
+    print(f"Average time: {avg_time:.3f}s")
+    print(f"Max time: {max_time:.3f}s")
 
     # Assert test requirements
     assert success_rate >= success_threshold, f"Success rate {success_rate:.2%} below threshold {success_threshold:.2%}"
@@ -627,7 +583,6 @@ def test_load_with_long_tasks(client, app_with_mocks):
                 })
 
                 if response.status_code != 200:
-                    print(f"Request {i} failed with status {response.status_code}")
                     return {
                         'success': False,
                         'duration': time.time() - start_time,
@@ -644,11 +599,9 @@ def test_load_with_long_tasks(client, app_with_mocks):
                 while status_checks < max_checks:
                     status_resp = test_client.get(f'/status/{task_id}')
                     if status_resp.status_code != 200:
-                        print(f"Status check failed for task {task_id}: {status_resp.status_code}")
                         break
 
                     status_data = status_resp.get_json()
-                    print(f"Task {task_id} status: {status_data.get('status')} (check {status_checks + 1})")
 
                     if status_data.get('status') == 'completed':
                         break
@@ -676,7 +629,6 @@ def test_load_with_long_tasks(client, app_with_mocks):
                     result = future.result()
                     results.append(result)
                 except Exception as e:
-                    print(f"Request failed with error: {str(e)}")
                     results.append({
                         'success': False,
                         'error': str(e)

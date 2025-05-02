@@ -88,20 +88,6 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
-    - uses: actions/checkout@v3
-
-    - name: Set up kubectl
-      uses: azure/setup-kubectl@v3
-
-    - name: Set up kubeconfig
-      run: |
-        mkdir -p ~/.kube
-        echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
-        chmod 600 ~/.kube/config
-
-    - name: Deploy to Kubernetes
-      run: |
-        # Update image tag in deployment
-        kubectl set image deployment/file-classifier file-classifier=${{ secrets.DOCKERHUB_USERNAME }}/file-classifier:${{ github.sha }}
-        # Wait for rollout to complete
-        kubectl rollout status deployment/file-classifier
+      - name: Trigger Render Deploy
+        run: |
+          curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK }}
