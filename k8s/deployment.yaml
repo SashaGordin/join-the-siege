@@ -33,6 +33,39 @@ spec:
               key: openai-api-key
         - name: REDIS_URL
           value: "redis://redis-service:6379/0"
+        - name: MAX_FILE_SIZE
+          value: "10485760"
+        - name: ALLOWED_MIME_TYPES
+          value: "application/pdf,text/plain,text/csv"
+        - name: REDIS_HOST
+          value: "redis-cache"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_DB
+          value: "0"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: classifier-secrets
+              key: redis-password
+        - name: DOCKERHUB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: classifier-secrets
+              key: dockerhub-username
+        - name: DOCKERHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: classifier-secrets
+              key: dockerhub-token
+        - name: FLASK_APP
+          value: "src.app"
+        - name: FLASK_ENV
+          value: "development"
+        - name: DEBUG
+          value: "True"
+        - name: LOG_LEVEL
+          value: "INFO"
         resources:
           requests:
             memory: "512Mi"
