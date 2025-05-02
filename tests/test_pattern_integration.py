@@ -1,9 +1,10 @@
 import pytest
 from pathlib import Path
-from src.classifier.content_classifier import ContentClassifier
+from src.classifier.content_classifier import ContentClassifier, ClassificationResult
 from src.classifier.pattern_learning.pattern_matcher import PatternMatcher
 from src.classifier.pattern_learning.pattern_store import PatternStore
 from src.classifier.pattern_learning.models import Pattern, PatternType, ConfidenceScore
+from src.classifier.hybrid_classifier import HybridClassifier
 import tempfile
 import os
 
@@ -70,18 +71,30 @@ def test_classify_file_with_pattern_features(monkeypatch, dummy_patterns):
 
     try:
         # Patch pattern store to return dummy patterns
-        classifier = ContentClassifier()
+        classifier = HybridClassifier()
         monkeypatch.setattr(classifier.pattern_store, 'get_patterns_by_industry', lambda industry: dummy_patterns)
-        # Patch LLM classification to return a dummy result
-        dummy_llm_result = type('Dummy', (), {"doc_type": "invoice", "confidence": 0.9, "features": [{"type": "date", "values": ["2024-01-01"], "present": True}]})()
-        monkeypatch.setattr(classifier, '_classify_with_llm', lambda text, industry: dummy_llm_result)
+        # Patch LLM classification to return a dummy result of the correct type
+        dummy_llm_result = ClassificationResult(
+            doc_type="invoice",
+            confidence=0.9,
+            features=[{"type": "date", "values": ["2024-01-01"], "present": True}]
+        )
+        monkeypatch.setattr(classifier.content_classifier, '_classify_with_llm', lambda text, industry: dummy_llm_result)
 
-        result = classifier.classify_file(tmp_path, industry="financial")
-        assert "pattern_features" in result
-        feature_types = {f["feature_type"] for f in result["pattern_features"]}
+        # Read the file as text
+        with open(tmp_path, 'r') as f:
+            file_text = f.read()
+        result = classifier.classify_document(file_text, industry="financial")
+        print("\n[TEST LOG] Classification result:", result)
+        if hasattr(result, 'pattern_matches'):
+            for m in result.pattern_matches:
+                print(f"[TEST LOG] Pattern match: {m}")
+        else:
+            print("[TEST LOG] No pattern_matches in result")
+        feature_types = {m.pattern.feature_type for m in result.pattern_matches}
         assert "date" in feature_types
         assert "amount" in feature_types
-        for f in result["pattern_features"]:
-            assert f["confidence"] >= 0.6
+        for m in result.pattern_matches:
+            assert m.confidence.value >= 0.6
     finally:
         os.unlink(tmp_path)

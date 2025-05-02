@@ -9,7 +9,6 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_DB=0
-      - TESTING=true  # Force localhost Redis in test environment
     depends_on:
       - redis
       - celery-worker

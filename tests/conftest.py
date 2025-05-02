@@ -230,3 +230,8 @@ def mock_cache_service(mock_redis):
     cache_service = CacheService()
     cache_service.redis_client = mock_redis
     return cache_service
+
+@pytest.fixture
+def cached_pattern_matcher():
+    """Create a cached pattern matcher instance."""
+    return PatternMatcher()

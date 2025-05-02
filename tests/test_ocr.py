@@ -5,6 +5,7 @@ import io
 from src.classifier.content_classifier import ContentClassifier
 from src.classifier.exceptions import TextExtractionError
 import numpy as np
+import logging
 
 class TestOCRFunctionality:
     @pytest.fixture
@@ -63,16 +64,27 @@ class TestOCRFunctionality:
 
     def test_rotated_image(self, classifier, create_test_image):
         """Test text extraction from a rotated image."""
+        logger = logging.getLogger(__name__)
         test_text = "INVOICE #12345"
         image_path = create_test_image(test_text)
 
+        logger.info(f"Created test image at: {image_path}")
         # Rotate image
         with Image.open(image_path) as img:
             rotated = img.rotate(90, expand=True)  # expand=True to prevent cropping
             rotated.save(image_path, dpi=(300, 300))
+        logger.info(f"Rotated image saved at: {image_path}")
 
-        extracted_text = classifier.extract_text(image_path)
-        assert "12345" in extracted_text
+        try:
+            extracted_text = classifier.extract_text(image_path)
+            logger.info(f"Extracted text: {extracted_text}")
+            assert "12345" in extracted_text
+        except NotImplementedError as e:
+            logger.error(f"OCR not implemented: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error during OCR: {e}")
+            raise
 
     def test_low_quality_image(self, classifier, create_test_image):
         """Test text extraction from a low quality image."""
@@ -111,12 +123,23 @@ Item B      1       $50
 
     def test_invalid_image(self, classifier, tmp_path):
         """Test handling of invalid or corrupted images."""
-        invalid_path = tmp_path / "invalid.png"
-        with open(invalid_path, 'wb') as f:
-            f.write(b"Not a valid PNG file")
+        logger = logging.getLogger(__name__)
 
-        with pytest.raises(TextExtractionError):
-            classifier.extract_text(invalid_path)
+        # Create invalid image file
+        invalid_path = tmp_path / "invalid.png"
+        logger.info(f"Creating invalid image at path: {invalid_path}")
+
+        with open(invalid_path, 'wb') as f:
+            content = b"Not a valid PNG file"
+            f.write(content)
+            logger.info(f"Wrote {len(content)} bytes of invalid data")
+
+        logger.info("Attempting to extract text from invalid image...")
+        with pytest.raises(TextExtractionError) as exc_info:
+            extracted_text = classifier.extract_text(invalid_path)
+            logger.error(f"Expected TextExtractionError but got text: {extracted_text}")
+
+        logger.info(f"Caught exception: {exc_info.value}")
 
     def test_empty_image(self, classifier, create_test_image):
         """Test handling of images with no text."""

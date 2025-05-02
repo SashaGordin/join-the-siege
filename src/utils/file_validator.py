@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import magic
 from pathlib import Path
 from typing import Union, Dict, Any

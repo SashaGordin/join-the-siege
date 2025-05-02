@@ -7,7 +7,7 @@ import uuid
 import hashlib
 import logging
 
-from src.classifier import ContentClassifier
+from src.classifier.hybrid_classifier import HybridClassifier
 from src.utils.file_validator import FileValidator
 from src.utils.exceptions import (
     FileValidationError,
@@ -31,9 +31,12 @@ logger = logging.getLogger(__name__)
 
 # Initialize our file validator, classifier, and config manager
 file_validator = FileValidator()
-content_classifier = ContentClassifier()
+hybrid_classifier = HybridClassifier()
 config_manager = IndustryConfigManager()
 cache_service = CacheService()
+
+# Compatibility alias for legacy code/tests
+content_classifier = hybrid_classifier
 
 def save_uploaded_file(uploaded_file):
     """
@@ -63,32 +66,21 @@ def save_uploaded_file(uploaded_file):
 @app.route('/classify_file', methods=['POST'])
 def classify_file_route():
     """
-    Endpoint to classify a file based on its content.
-    Expects a file in the request.files with key 'file'.
-    Optionally accepts an 'industry' parameter to specify the industry context.
-    """
-    print("\n=== Classify File Route Debug ===")
+    Classify an uploaded file.
 
+    Returns:
+        JSON response with classification results or error
+    """
     if 'file' not in request.files:
-        return jsonify({"error": "No file part in the request"}), 400
+        return jsonify({"error": "No file provided"}), 400
 
     file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No selected file"}), 400
+    if not file.filename:
+        return jsonify({"error": "No file selected"}), 400
 
-    # Get industry parameter if provided
-    industry = request.form.get('industry')
-    if industry:
-        try:
-            # Verify industry exists
-            config_manager.load_industry_config(industry)
-        except ValueError as e:
-            available_industries = config_manager.list_available_industries()
-            return jsonify({
-                "error": f"Invalid industry: {industry}. Valid options are: {', '.join(available_industries)}"
-            }), 400
+    logger.info(f"Received file: {file.filename}")
+    logger.info(f"Content type: {file.content_type}")
 
-    temp_path = None
     try:
         # Save uploaded file with correct extension
         temp_path = save_uploaded_file(file)
@@ -108,10 +100,6 @@ def classify_file_route():
 
         # Get file type info
         mime_type = file_validator.get_file_type(temp_path)
-
-        # For images, we want to pass through validation but fail at classification
-        if mime_type.startswith('image/'):
-            return jsonify({"error": "OCR not implemented yet"}), 501
 
         # Read file content for caching
         file_content = Path(temp_path).read_bytes()
@@ -144,14 +132,25 @@ def classify_file_route():
         try:
             logger.info("Cache miss - classifying file")
             logger.info("Cache miss - performing classification")
-            raw_result = content_classifier.classify_file(temp_path, industry=industry)
+            # Extract text from file
+            text = hybrid_classifier.content_classifier.extract_text(temp_path)
+            # Use hybrid classifier
+            raw_result = hybrid_classifier.classify_document(text)
 
             # Transform the result to our standard format
             classification_result = {
-                "document_type": raw_result["class"],
-                "confidence": raw_result["confidence"],
-                "features": raw_result["features"],
-                "pattern_features": raw_result.get("pattern_features", [])
+                "document_type": raw_result.doc_type,
+                "confidence": raw_result.confidence,
+                "features": raw_result.features,
+                "pattern_matches": [
+                    {
+                        "type": m.pattern.feature_type,
+                        "text": m.text,
+                        "confidence": m.confidence.value,
+                        "context": m.context
+                    } for m in raw_result.pattern_matches
+                ],
+                "metadata": raw_result.metadata
             }
 
             # Prepare the complete response data
@@ -163,18 +162,6 @@ def classify_file_route():
                 },
                 "preview": preview_data
             }
-
-            # Add industry-specific validation info if applicable
-            if industry:
-                validation_warnings = [
-                    f for f in classification_result["features"]
-                    if f["type"] == "validation_warning"
-                ]
-                if validation_warnings:
-                    response_data["validation"] = {
-                        "warnings": [w["values"] for w in validation_warnings],
-                        "industry": industry
-                    }
 
             # Before caching
             logger.info("Preparing to cache classification result")
@@ -197,12 +184,12 @@ def classify_file_route():
 
             return jsonify(response_data), 200
 
+        except NotImplementedError as e:
+            return jsonify({"error": str(e)}), 501
         except TextExtractionError as e:
             return jsonify({"error": f"Text extraction failed: {str(e)}"}), 422
         except ClassificationError as e:
             return jsonify({"error": f"Classification failed: {str(e)}"}), 422
-        except NotImplementedError as e:
-            return jsonify({"error": str(e)}), 501
 
     except Exception as e:
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
@@ -271,9 +258,11 @@ def preview_file_route():
             preview_data = file_validator.get_file_preview(temp_path)
             return jsonify(preview_data), 200
         except Exception as e:
+            logger.error(f"Could not generate preview: {str(e)}")
             return jsonify({"error": f"Could not generate preview: {str(e)}"}), 500
 
     except Exception as e:
+        logger.error(f"Internal server error: {str(e)}")
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
     finally:
@@ -400,7 +389,7 @@ def health_check():
         cache_service.get("health_check")
 
         # Check if we can initialize the classifier
-        classifier = ContentClassifier()
+        classifier = HybridClassifier()
 
         return jsonify({
             'status': 'healthy',
