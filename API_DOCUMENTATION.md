@@ -4,6 +4,34 @@ This API powers a document classification service that uses AI to categorize and
 
 ---
 
+## Classifier Architecture: ContentClassifier & HybridClassifier
+
+### ContentClassifier
+- The `ContentClassifier` is responsible for analyzing the content of documents (PDF, text, images, etc.) and determining their type, confidence, and key features.
+- It uses a Large Language Model (LLM, e.g., OpenAI GPT) to:
+  - Extract text from files (including OCR for images)
+  - Generate a prompt with industry-specific context and required features
+  - Parse the LLM's response to identify document type, confidence, and features (amounts, dates, IDs, etc.)
+- It can also use pattern matching (regex, fuzzy, etc.) to extract features, leveraging a `PatternStore` for industry-specific patterns.
+- The classifier is extensible: new industries and features can be added via configuration files and pattern definitions.
+
+### HybridClassifier
+- The `HybridClassifier` combines the strengths of LLM-based classification and pattern-based extraction.
+- It works by:
+  1. Using the `ContentClassifier` to get an initial classification and feature set from the LLM.
+  2. Using the `PatternMatcher` and `PatternStore` to find additional features and matches based on industry-specific patterns.
+  3. Merging the results, cross-validating features, and computing a final confidence score (weighted between LLM and pattern results).
+- The hybrid approach ensures:
+  - Robustness to both structured and unstructured documents
+  - High accuracy for both common and industry-specific features
+  - Extensibility for new industries and document types
+
+**In summary:**
+- The `ContentClassifier` provides flexible, LLM-driven document understanding with optional pattern support.
+- The `HybridClassifier` fuses LLM and pattern results for maximum accuracy and reliability, especially in production and industry-specific scenarios.
+
+---
+
 ## Project Overview
 
 This project is a document classification API that uses AI to categorize and extract features from uploaded files. It supports both synchronous and asynchronous processing, industry-specific configurations, and integrates with Redis and Celery for caching and background tasks.
@@ -482,3 +510,260 @@ For more details, see the code in `src/classifier/config/config_manager.py` and 
 - `src/classifier/content_classifier.py` — LLM-based extraction
 - `src/classifier/pattern_learning/` — Pattern-based extraction
 - `src/app.py` — API endpoints
+
+---
+
+## Detailed API Response Reference
+
+### 1. POST `/classify_file`
+
+**Success Response (`200 OK`):**
+```json
+{
+  "classification": {
+    "document_type": "invoice",
+    "confidence": 0.95,
+    "features": [
+      { "type": "amount", "value": "$1500", "present": true },
+      { "type": "date", "value": "2024-03-15", "present": true },
+      { "type": "invoice_number", "value": "INV-2024-001", "present": true }
+    ]
+  },
+  "file_info": {
+    "mime_type": "application/pdf",
+    "filename": "invoice.pdf",
+    "size": 123456
+  }
+}
+```
+**Field meanings:**
+- `classification.document_type`: e.g., `"invoice"`, `"bank_statement"`, `"unknown"`
+- `classification.confidence`: float, 0–1
+- `classification.features`: array of objects, each with:
+  - `type`: e.g., `"amount"`, `"date"`, `"invoice_number"`
+  - `value`: extracted value as string
+  - `present`: boolean
+- `file_info.mime_type`: e.g., `"application/pdf"`
+- `file_info.filename`: original filename
+- `file_info.size`: file size in bytes
+
+**Error Responses:**
+- `400 Bad Request`:
+  - `{ "error": "No file provided" }`
+  - `{ "error": "No file selected" }`
+  - `{ "error": "Invalid file type" }`
+- `413 Request Entity Too Large`:
+  - `{ "error": "File too large" }`
+- `500 Internal Server Error`:
+  - `{ "error": "Unexpected error" }`
+
+---
+
+### 2. POST `/preview_file`
+
+**Success Response (`200 OK`):**
+```json
+{
+  "preview_available": true,
+  "preview": "INVOICE\nInvoice Number: INV-2024-001\nDate: March 15, 2024\nTotal Amount: $1500",
+  "file_info": {
+    "mime_type": "application/pdf",
+    "filename": "invoice.pdf",
+    "size": 123456
+  }
+}
+```
+**Field meanings:**
+- `preview_available`: boolean
+- `preview`: string (text preview or summary)
+- `file_info`: as above
+
+**Error Responses:**
+- `400 Bad Request`:
+  - `{ "error": "No file provided" }`
+  - `{ "error": "Invalid file" }`
+- `500 Internal Server Error`:
+  - `{ "error": "Error generating preview" }`
+
+---
+
+### 3. GET `/industries`
+
+**Success Response (`200 OK`):**
+```json
+{
+  "finance": {
+    "name": "Finance",
+    "description": "Financial documents (invoices, statements, etc.)",
+    "features": {
+      "shared": ["amount", "date", "account_number"],
+      "specific": {
+        "invoice_number": "Unique invoice identifier",
+        "payment_terms": "Terms of payment"
+      }
+    },
+    "validation_rules": {
+      "required_features": ["amount", "date"]
+    },
+    "confidence_thresholds": {
+      "minimum": 0.7,
+      "high": 0.9
+    }
+  },
+  "healthcare": {
+    "name": "Healthcare",
+    "description": "Medical and healthcare documents",
+    "features": {
+      "shared": ["amount", "date", "patient_id"],
+      "specific": {
+        "cpt_code": "Medical procedure code",
+        "provider_npi": "Provider NPI number"
+      }
+    },
+    "validation_rules": {
+      "required_features": ["patient_id", "date"]
+    },
+    "confidence_thresholds": {
+      "minimum": 0.6,
+      "high": 0.85
+    }
+  }
+}
+```
+**Field meanings:**
+- Each top-level key is an industry.
+- Each industry object includes:
+  - `name`: string
+  - `description`: string
+  - `features.shared`: array of strings
+  - `features.specific`: object mapping feature names to descriptions
+  - `validation_rules.required_features`: array of strings
+  - `confidence_thresholds.minimum`: float
+  - `confidence_thresholds.high`: float
+
+**Error Response:**
+- `500 Internal Server Error`:
+  - `{ "error": "Error loading industries" }`
+
+---
+
+### 4. POST `/process`
+
+**Request Body Example:**
+```json
+{
+  "content": "INVOICE\nInvoice Number: INV-2024-001\nDate: March 15, 2024\nTotal Amount: $1500",
+  "document_id": "doc-123",
+  "metadata": { "industry": "finance" }
+}
+```
+
+**Success Response if cached (`200 OK`):**
+```json
+{
+  "status": "completed",
+  "result": {
+    "document_id": "doc-123",
+    "doc_type": "invoice",
+    "confidence": 0.95,
+    "features": [
+      { "type": "amount", "value": "$1500", "present": true },
+      { "type": "date", "value": "2024-03-15", "present": true },
+      { "type": "invoice_number", "value": "INV-2024-001", "present": true }
+    ],
+    "pattern_matches": [],
+    "metadata": {
+      "industry": "finance",
+      "llm_confidence": 0.95,
+      "pattern_confidence": null,
+      "pattern_count": 0
+    }
+  },
+  "cached": true
+}
+```
+
+**Success Response if processing started (`200 OK`):**
+```json
+{
+  "status": "processing",
+  "task_id": "celery-task-id-abc123",
+  "document_id": "doc-123"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`:
+  - `{ "error": "Missing content" }`
+  - `{ "error": "Invalid industry" }`
+- `500 Internal Server Error`:
+  - `{ "error": "Unexpected error" }`
+
+---
+
+### 5. GET `/status/<task_id>`
+
+**Success Response if completed (`200 OK`):**
+```json
+{
+  "status": "completed",
+  "result": {
+    "document_id": "doc-123",
+    "doc_type": "invoice",
+    "confidence": 0.95,
+    "features": [
+      { "type": "amount", "value": "$1500", "present": true },
+      { "type": "date", "value": "2024-03-15", "present": true },
+      { "type": "invoice_number", "value": "INV-2024-001", "present": true }
+    ],
+    "pattern_matches": [],
+    "metadata": {
+      "industry": "finance",
+      "llm_confidence": 0.95,
+      "pattern_confidence": null,
+      "pattern_count": 0
+    }
+  }
+}
+```
+
+**Success Response if still processing:**
+```json
+{ "status": "processing", "task_id": "celery-task-id-abc123" }
+```
+
+**Success Response if failed:**
+```json
+{ "status": "failed", "error": "Classification failed: <reason>" }
+```
+
+**Success Response if expired:**
+```json
+{ "status": "expired", "error": "Task result has expired" }
+```
+
+**Error Response:**
+- `500 Internal Server Error`:
+  - `{ "error": "Unexpected error" }`
+
+---
+
+### 6. GET `/health`
+
+**Success Response (`200 OK`):**
+```json
+{
+  "status": "healthy",
+  "redis": "connected",
+  "classifier": "initialized"
+}
+```
+
+**Error Response:**
+- `500 Internal Server Error`:
+  ```json
+  {
+    "status": "unhealthy",
+    "error": "Redis connection failed"
+  }
+  ```

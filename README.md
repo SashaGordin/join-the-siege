@@ -2,13 +2,13 @@
 
 ## Overview
 
-At Heron, we’re using AI to automate document processing workflows in financial services and beyond. Each day, we handle over 100,000 documents that need to be quickly identified and categorised before we can kick off the automations.
+At Heron, we're using AI to automate document processing workflows in financial services and beyond. Each day, we handle over 100,000 documents that need to be quickly identified and categorised before we can kick off the automations.
 
 This repository provides a basic endpoint for classifying files by their filenames. However, the current classifier has limitations when it comes to handling poorly named files, processing larger volumes, and adapting to new industries effectively.
 
 **Your task**: improve this classifier by adding features and optimisations to handle (1) poorly named files, (2) scaling to new industries, and (3) processing larger volumes of documents.
 
-This is a real-world challenge that allows you to demonstrate your approach to building innovative and scalable AI solutions. We’re excited to see what you come up with! Feel free to take it in any direction you like, but we suggest:
+This is a real-world challenge that allows you to demonstrate your approach to building innovative and scalable AI solutions. We're excited to see what you come up with! Feel free to take it in any direction you like, but we suggest:
 
 
 ### Part 1: Enhancing the Classifier
@@ -76,3 +76,31 @@ Please aim to spend 3 hours on this challenge.
 Once completed, submit your solution by sharing a link to your forked repository. Please also provide a brief write-up of your ideas, approach, and any instructions needed to run your solution.
 
 > **Note:** All documentation and detailed explanation of the project, including setup, API usage, extension guides, and deployment, can be found in [API_DOCUMENTATION.md](./API_DOCUMENTATION.md).
+
+## API Reference
+
+For full details on all API endpoints, request/response formats, and integration examples, see [API_DOCUMENTATION.md](./API_DOCUMENTATION.md).
+
+This includes:
+- Complete endpoint list and descriptions
+- Example requests and responses (with full JSON)
+- Error codes and meanings
+- Field-by-field explanations
+- In-depth extension and configuration instructions
+
+**For full details and advanced configuration, see [API_DOCUMENTATION.md](./API_DOCUMENTATION.md).**
+
+## Future Improvements
+
+If I were to continue developing this project, here are some areas I would focus on to make the system even more scalable, resilient, and efficient:
+
+- **Horizontal scaling:** Deploy the API and Celery workers across multiple nodes/containers for higher throughput.
+- **Async I/O:** Consider migrating to an async web framework (e.g., FastAPI) for better concurrency and performance, especially for I/O-bound tasks.
+- **Robust error handling:** Add retry logic and graceful degradation for failed tasks or external API calls (e.g., LLM, OCR).
+- **Monitoring & alerting:** Integrate with Prometheus/Grafana for real-time metrics and alerts.
+- **Batch processing:** Support classifying multiple documents in a single request for efficiency.
+- **Plugin system:** Allow new feature extractors or industry configs to be added as plugins, without code changes.
+- **Security:** Add authentication/authorization (API keys, OAuth) and improve file validation to prevent abuse.
+- **Performance testing:** Benchmark and optimize for speed and memory usage under load.
+
+These improvements would help ensure the system is production-ready for large-scale, real-world deployments.
